@@ -1,0 +1,12 @@
+[package]
+name = "ferry-host"
+description = "Native messaging host that forwards browser downloads to Ferry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+anyhow.workspace = true
