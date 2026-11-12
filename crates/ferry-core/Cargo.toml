@@ -14,3 +14,11 @@ rusqlite.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 serde.workspace = true
+tokio-util = "0.7.20"
+percent-encoding = "2.3.2"
+serde_json.workspace = true
+
+[dev-dependencies]
+axum = "0.8.9"
+futures-util = "0.3.34"
+tempfile = "3.27.0"
