@@ -313,6 +313,9 @@ async fn connection_errors_name_the_cause() {
 async fn adapts_to_servers_that_limit_connections() {
     let server = common::spawn(common::Options::default()).await;
     *server.state.max_connections.lock().unwrap() = Some(2);
+    // Slow the body down so connections overlap even on fast machines;
+    // otherwise each could finish before the next one asks.
+    *server.state.chunk_delay.lock().unwrap() = Some(Duration::from_millis(2));
     let dir = tempfile::tempdir().unwrap();
     let engine = Engine::in_memory(EngineConfig {
         segments: 8,
