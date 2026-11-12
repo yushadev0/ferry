@@ -29,3 +29,8 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+png = "0.18.1"
+base64 = "0.23.1"
+
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+file_icon_provider = "1.0.2"

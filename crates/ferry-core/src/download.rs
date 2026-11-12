@@ -36,8 +36,8 @@ use crate::{
 };
 
 /// A byte range of the file. `end` is inclusive; `None` means "until EOF".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Segment {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct Segment {
     pub start: u64,
     pub end: Option<u64>,
     /// Next byte to write.
@@ -53,7 +53,8 @@ impl Segment {
         self.remaining() == Some(0)
     }
 
-    fn downloaded(&self) -> u64 {
+    /// Bytes of this segment already written.
+    pub fn downloaded(&self) -> u64 {
         let pos = match self.end {
             Some(e) => self.pos.min(e + 1),
             None => self.pos,
@@ -300,9 +301,9 @@ async fn execute(inner: &Arc<Inner>, id: DownloadId, token: &CancellationToken) 
                 }
             },
             _ = tick.tick() => {
-                let (downloaded, snapshot) = {
+                let (downloaded, snapshot, connections) = {
                     let s = lock(&state);
-                    (s.downloaded(), s.segs.clone())
+                    (s.downloaded(), s.segs.clone(), s.in_use.iter().filter(|u| **u).count())
                 };
                 let elapsed = last_sample.0.elapsed().as_secs_f64();
                 let speed = if elapsed > 0.0 {
@@ -311,11 +312,18 @@ async fn execute(inner: &Arc<Inner>, id: DownloadId, token: &CancellationToken) 
                     0
                 };
                 last_sample = (Instant::now(), downloaded);
-                inner.emit(Event::Progress { id, downloaded, total: info.size, speed });
                 if last_save.elapsed() >= cfg.save_interval {
                     inner.store.save_segments(id, &snapshot, downloaded)?;
                     last_save = Instant::now();
                 }
+                inner.emit(Event::Progress {
+                    id,
+                    downloaded,
+                    total: info.size,
+                    speed,
+                    connections,
+                    segments: snapshot,
+                });
             }
         }
     }
@@ -334,6 +342,8 @@ async fn execute(inner: &Arc<Inner>, id: DownloadId, token: &CancellationToken) 
         downloaded,
         total: info.size,
         speed: 0,
+        connections: 0,
+        segments: segs,
     });
 
     if token.is_cancelled() {

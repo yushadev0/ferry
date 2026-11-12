@@ -73,6 +73,7 @@ async fn follow(rx: &mut Receiver<Event>, id: DownloadId, started: Instant, stop
                 downloaded,
                 total,
                 speed,
+                ..
             }) if i == id => {
                 println!(
                     "{:6.1}s {:>10} / {:?}  {:>7.2} MB/s",

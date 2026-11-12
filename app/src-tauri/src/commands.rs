@@ -93,6 +93,26 @@ pub async fn start_now(state: State<'_, AppState>, ids: Vec<DownloadId>) -> CmdR
     Ok(())
 }
 
+/// Starts downloads at `at` (Unix seconds) through the queue.
+#[tauri::command]
+pub async fn schedule_downloads(
+    state: State<'_, AppState>,
+    ids: Vec<DownloadId>,
+    at: i64,
+) -> CmdResult<()> {
+    for id in ids {
+        state.engine.schedule(id, at).await.map_err(err)?;
+    }
+    state.wake_scheduler();
+    Ok(())
+}
+
+/// The system icon for a file extension, as a PNG data URL.
+#[tauri::command]
+pub fn file_icon(state: State<'_, AppState>, ext: String) -> Option<String> {
+    state.file_icons.get(&ext)
+}
+
 #[tauri::command]
 pub fn queue_state(state: State<'_, AppState>) -> QueueState {
     state.queue_state()

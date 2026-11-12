@@ -1,11 +1,17 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
+  import { Menu, PredefinedMenuItem } from "@tauri-apps/api/menu";
   import * as api from "$lib/api";
-  import { extension, formatBytes, formatEta, formatSpeed, percent } from "$lib/format";
+  import { formatBytes, formatEta, formatSpeed, formatStartTime, percent } from "$lib/format";
   import Icon, { type IconName } from "$lib/Icon.svelte";
+  import AppLogo from "$lib/AppLogo.svelte";
+  import FileIcon from "$lib/FileIcon.svelte";
+  import SegmentBar from "$lib/SegmentBar.svelte";
+  import DetailsPane from "$lib/DetailsPane.svelte";
   import AddDialog from "$lib/AddDialog.svelte";
   import SettingsDialog from "$lib/SettingsDialog.svelte";
+  import ScheduleDialog from "$lib/ScheduleDialog.svelte";
 
   type Filter = "all" | "active" | "completed" | "failed";
 
@@ -16,49 +22,86 @@
     { id: "failed", label: "Failed", icon: "alert" },
   ];
 
-  const STATUS_LABEL: Record<api.Status, string> = {
-    queued: "Waiting",
-    downloading: "Downloading",
-    paused: "Paused",
-    completed: "Finished",
-    failed: "Failed",
-  };
+  const UNFINISHED: api.Status[] = ["queued", "scheduled", "downloading", "paused"];
 
   let downloads = $state<api.Download[]>([]);
   let settings = $state<api.Settings | null>(null);
   let queue = $state<api.QueueState>({ running: true, resumesAt: null });
   let filter = $state<Filter>("all");
+  let search = $state("");
   const selected = new SvelteSet<number>();
   let lastClicked: number | null = null;
+
+  /** Per-download, per-segment speeds (bytes/s by segment start). */
+  let laneSpeeds = $state<Record<number, Map<number, number>>>({});
+  const lastSample = new Map<number, { at: number; pos: Map<number, number> }>();
 
   let showAdd = $state(false);
   let addUrl = $state("");
   let showSettings = $state(false);
+  let scheduleIds = $state<number[] | null>(null);
   let confirmRemove = $state(false);
   let deleteFiles = $state(false);
   let banner = $state<string | null>(null);
+  let searchInput: HTMLInputElement | undefined = $state();
 
   const matches = (d: api.Download, f: Filter) =>
     f === "all" ||
-    (f === "active" && ["queued", "downloading", "paused"].includes(d.status)) ||
+    (f === "active" && UNFINISHED.includes(d.status)) ||
     (f === "completed" && d.status === "completed") ||
     (f === "failed" && d.status === "failed");
 
-  const visible = $derived(downloads.filter((d) => matches(d, filter)).sort((a, b) => b.id - a.id));
+  const needle = $derived(search.trim().toLowerCase());
+  const visible = $derived(
+    downloads
+      .filter((d) => matches(d, filter) && (!needle || d.file_name.toLowerCase().includes(needle)))
+      .sort((a, b) => b.id - a.id),
+  );
   const counts = $derived(
     Object.fromEntries(FILTERS.map((f) => [f.id, downloads.filter((d) => matches(d, f.id)).length])),
   );
   const selection = $derived(downloads.filter((d) => selected.has(d.id)));
-  const canStart = $derived(
-    selection.some((d) => d.status === "paused" || d.status === "failed"),
-  );
-  const canStartNow = $derived(
-    selection.some((d) => d.status !== "completed" && d.status !== "downloading"),
-  );
-  const waiting = $derived(downloads.filter((d) => d.status === "queued").length);
-  const canPause = $derived(selection.some((d) => d.status === "downloading" || d.status === "queued"));
+  const focused = $derived(selection.find((d) => d.id === lastClicked) ?? selection[0] ?? null);
+
   const running = $derived(downloads.filter((d) => d.status === "downloading"));
+  const waiting = $derived(downloads.filter((d) => d.status === "queued"));
+  const scheduled = $derived(
+    downloads.filter((d) => d.status === "scheduled").sort((a, b) => (a.start_at ?? 0) - (b.start_at ?? 0)),
+  );
   const totalSpeed = $derived(running.reduce((sum, d) => sum + (d.speed ?? 0), 0));
+
+  const can = $derived({
+    resume: selection.some((d) => ["paused", "failed", "scheduled"].includes(d.status)),
+    pause: selection.some((d) => ["downloading", "queued", "scheduled"].includes(d.status)),
+    startNow: selection.some((d) => d.status !== "completed" && d.status !== "downloading"),
+    schedule: selection.some((d) => d.status !== "completed"),
+    remove: selection.length > 0,
+  });
+
+  function statusLine(d: api.Download): { icon: IconName; text: string; tone: string } {
+    switch (d.status) {
+      case "downloading":
+        return {
+          icon: "down",
+          text: d.connections ? `Downloading · ${d.connections} connection${d.connections === 1 ? "" : "s"}` : "Downloading",
+          tone: "accent",
+        };
+      case "queued":
+        return { icon: "clock", text: queue.running ? "Waiting in queue" : `Waiting · queue resumes at ${queue.resumesAt}`, tone: "muted" };
+      case "scheduled":
+        return {
+          icon: "clock",
+          text: d.start_at ? `Starts ${formatStartTime(d.start_at).replace("Tomorrow", "tomorrow")}` : "Scheduled",
+          tone: "muted",
+        };
+      case "paused":
+        return { icon: "pause", text: "Paused", tone: "warn" };
+      case "failed":
+        return { icon: "alert", text: d.error ?? "Failed", tone: "danger" };
+      case "completed":
+        return { icon: "check", text: "Finished", tone: "ok" };
+    }
+  }
 
   async function run(action: () => Promise<unknown>) {
     try {
@@ -69,8 +112,26 @@
     }
   }
 
-  function find(id: number) {
-    return downloads.find((d) => d.id === id);
+  const find = (id: number) => downloads.find((d) => d.id === id);
+  const ids = () => [...selected];
+
+  function trackLanes(id: number, segments: api.Segment[]) {
+    const now = performance.now();
+    const prev = lastSample.get(id);
+    const pos = new Map(segments.map((s) => [s.start, s.pos]));
+    lastSample.set(id, { at: now, pos });
+    if (!prev) return;
+    const dt = (now - prev.at) / 1000;
+    if (dt <= 0) return;
+    const old = laneSpeeds[id] ?? new Map<number, number>();
+    const next = new Map<number, number>();
+    for (const [start, p] of pos) {
+      const before = prev.pos.get(start);
+      const instant = before == null ? 0 : Math.max(0, (p - before) / dt);
+      // Smooth a little so the numbers don't flicker.
+      next.set(start, 0.5 * instant + 0.5 * (old.get(start) ?? instant));
+    }
+    laneSpeeds[id] = next;
   }
 
   async function handleEvent(ev: api.EngineEvent) {
@@ -85,8 +146,15 @@
         if (!d) break;
         d.status = ev.status;
         d.error = ev.error;
-        if (ev.status !== "downloading") d.speed = 0;
-        if (ev.status === "completed") Object.assign(d, await api.getDownload(ev.id), { speed: 0 });
+        if (ev.status !== "downloading") {
+          d.speed = 0;
+          d.connections = 0;
+          lastSample.delete(ev.id);
+          delete laneSpeeds[ev.id];
+        }
+        if (ev.status === "completed" || ev.status === "scheduled" || ev.status === "queued") {
+          Object.assign(d, await api.getDownload(ev.id), { speed: 0, connections: 0 });
+        }
         break;
       }
       case "progress": {
@@ -94,7 +162,10 @@
         if (!d) break;
         d.downloaded = ev.downloaded;
         d.size = ev.total ?? d.size;
+        d.segments = ev.segments;
         d.speed = d.status === "downloading" ? ev.speed : 0;
+        d.connections = ev.connections;
+        if (d.status === "downloading") trackLanes(ev.id, ev.segments);
         break;
       }
       case "removed":
@@ -105,36 +176,27 @@
   }
 
   onMount(() => {
-    let unlisten: (() => void) | undefined;
     let disposed = false;
-    let unlistenQueue: (() => void) | undefined;
+    const unlisten: (() => void)[] = [];
     (async () => {
-      unlisten = await api.onEngineEvent(handleEvent);
-      unlistenQueue = await api.onQueueState((s) => (queue = s));
-      if (disposed) {
-        unlisten();
-        unlistenQueue();
-      }
-      [downloads, settings, queue] = await Promise.all([
-        api.listDownloads(),
-        api.getSettings(),
-        api.queueState(),
-      ]);
+      unlisten.push(await api.onEngineEvent(handleEvent));
+      unlisten.push(await api.onQueueState((s) => (queue = s)));
+      if (disposed) unlisten.forEach((u) => u());
+      [downloads, settings, queue] = await Promise.all([api.listDownloads(), api.getSettings(), api.queueState()]);
     })().catch((e) => (banner = api.message(e)));
     return () => {
       disposed = true;
-      unlisten?.();
-      unlistenQueue?.();
+      unlisten.forEach((u) => u());
     };
   });
 
   function select(e: MouseEvent, id: number) {
     if (e.shiftKey && lastClicked !== null) {
-      const ids = visible.map((d) => d.id);
-      const [a, b] = [ids.indexOf(lastClicked), ids.indexOf(id)].sort((x, y) => x - y);
+      const order = visible.map((d) => d.id);
+      const [a, b] = [order.indexOf(lastClicked), order.indexOf(id)].sort((x, y) => x - y);
       if (a >= 0) {
         if (!e.ctrlKey && !e.metaKey) selected.clear();
-        ids.slice(a, b + 1).forEach((i) => selected.add(i));
+        order.slice(a, b + 1).forEach((i) => selected.add(i));
         return;
       }
     }
@@ -153,37 +215,71 @@
     else if (d.status !== "downloading") run(() => api.startNow([d.id]));
   }
 
+  async function contextMenu(e: MouseEvent, d: api.Download) {
+    e.preventDefault();
+    if (!selected.has(d.id)) {
+      selected.clear();
+      selected.add(d.id);
+      lastClicked = d.id;
+    }
+    const sep = () => PredefinedMenuItem.new({ item: "Separator" });
+    const menu = await Menu.new({
+      items: [
+        { id: "open", text: "Open", enabled: d.status === "completed", action: () => run(() => api.openFile(d.id)) },
+        { id: "folder", text: "Show in folder", action: () => run(() => api.showInFolder(d.id)) },
+        await sep(),
+        { id: "resume", text: "Resume", enabled: can.resume, action: () => run(() => api.startDownloads(ids())) },
+        { id: "pause", text: "Pause", enabled: can.pause, action: () => run(() => api.pauseDownloads(ids())) },
+        { id: "now", text: "Start now", enabled: can.startNow, action: () => run(() => api.startNow(ids())) },
+        { id: "schedule", text: "Schedule…", enabled: can.schedule, action: () => (scheduleIds = ids()) },
+        await sep(),
+        { id: "copy", text: "Copy link", action: () => run(() => navigator.clipboard.writeText(d.url)) },
+        { id: "remove", text: "Remove…", action: () => (confirmRemove = true) },
+      ],
+    });
+    await menu.popup();
+  }
+
   function openAdd(url = "") {
     addUrl = url;
     showAdd = true;
   }
 
-  async function onPaste(e: ClipboardEvent) {
+  const dialogOpen = () => showAdd || showSettings || confirmRemove || scheduleIds !== null;
+
+  function onPaste(e: ClipboardEvent) {
     const target = e.target as HTMLElement;
-    if (showAdd || showSettings || target.closest("input")) return;
+    if (dialogOpen() || target.closest("input")) return;
     const text = e.clipboardData?.getData("text")?.trim() ?? "";
     if (/^(https?|ftp):\/\/\S+$/i.test(text)) openAdd(text);
   }
 
   function onkeydown(e: KeyboardEvent) {
-    if (showAdd || showSettings || confirmRemove) return;
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
+    if (dialogOpen()) return;
+    const mod = e.ctrlKey || e.metaKey;
+    const inInput = (e.target as HTMLElement).closest("input");
+    if (mod && e.key.toLowerCase() === "n") {
       e.preventDefault();
       openAdd();
-    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+    } else if (mod && e.key.toLowerCase() === "f") {
+      e.preventDefault();
+      searchInput?.focus();
+    } else if (inInput) {
+      if (e.key === "Escape") (e.target as HTMLInputElement).blur();
+    } else if (mod && e.key.toLowerCase() === "a") {
       e.preventDefault();
       visible.forEach((d) => selected.add(d.id));
     } else if (e.key === "Delete" && selected.size) {
       confirmRemove = true;
-    } else if (e.key === "Enter" && selection.length === 1) {
-      activate(selection[0]);
+    } else if (e.key === "Enter" && focused) {
+      activate(focused);
     }
   }
 
   async function removeSelected() {
-    const ids = [...selected];
+    const list = ids();
     confirmRemove = false;
-    await run(() => api.removeDownloads(ids, deleteFiles));
+    await run(() => api.removeDownloads(list, deleteFiles));
     deleteFiles = false;
   }
 </script>
@@ -191,147 +287,152 @@
 <svelte:window {onkeydown} onpaste={onPaste} />
 
 <div class="app">
-  <header class="toolbar">
+  <nav class="nav" aria-label="Categories">
     <div class="brand">
-      <span class="logo"><Icon name="download" size={16} /></span>
-      Ferry
+      <AppLogo size={22} />
+      <span>Ferry</span>
     </div>
-    <button class="btn primary" onclick={() => openAdd()} title="Add a download (Ctrl+N)">
-      <Icon name="plus" size={16} /> Add URL
-    </button>
-    <div class="sep"></div>
-    <button
-      class="tool"
-      disabled={!canStart}
-      title="Add to the queue; starts when there is a free slot"
-      onclick={() => run(() => api.startDownloads([...selected]))}>
-      <Icon name="play" /> Resume
-    </button>
-    <button
-      class="tool"
-      disabled={!canStartNow}
-      title="Start right away, ignoring the queue limit and schedule (double-click)"
-      onclick={() => run(() => api.startNow([...selected]))}>
-      <Icon name="zap" /> Start now
-    </button>
-    <button class="tool" disabled={!canPause} onclick={() => run(() => api.pauseDownloads([...selected]))}>
-      <Icon name="pause" /> Pause
-    </button>
-    <button class="tool" disabled={!selected.size} onclick={() => (confirmRemove = true)}>
-      <Icon name="trash" /> Remove
-    </button>
-    <div class="sep"></div>
-    <button
-      class="tool"
-      disabled={selection.length !== 1}
-      onclick={() => run(() => api.showInFolder(selection[0].id))}>
-      <Icon name="folder" /> Show in folder
-    </button>
-    <div class="spacer"></div>
-    <button class="tool" disabled={!settings} onclick={() => (showSettings = true)}>
-      <Icon name="sliders" /> Settings
-    </button>
-  </header>
 
-  <div class="body">
-    <nav class="sidebar" aria-label="Categories">
-      {#each FILTERS as f (f.id)}
-        <button class="cat" class:active={filter === f.id} onclick={() => (filter = f.id)}>
-          <Icon name={f.icon} size={16} />
-          <span>{f.label}</span>
-          <span class="count">{counts[f.id]}</span>
-        </button>
-      {/each}
-    </nav>
+    {#each FILTERS as f (f.id)}
+      <button class="nav-item" class:active={filter === f.id} onclick={() => (filter = f.id)} aria-current={filter === f.id}>
+        <span class="nav-icon"><Icon name={f.icon} /></span>
+        <span class="nav-label">{f.label}</span>
+        <span class="nav-count">{counts[f.id]}</span>
+      </button>
+    {/each}
 
-    <main class="list" aria-label="Downloads">
-      {#if banner}
-        <div class="banner" role="alert">
-          <Icon name="alert" size={16} />
-          <span>{banner}</span>
-          <button class="icon-btn" aria-label="Dismiss" onclick={() => (banner = null)}>
-            <Icon name="x" size={14} />
-          </button>
-        </div>
-      {/if}
-
-      <div class="thead">
-        <span>Name</span>
-        <span class="num">Size</span>
-        <span>Progress</span>
-        <span class="num">Speed</span>
-        <span class="num">Time left</span>
-        <span>Status</span>
+    <h2 class="nav-heading">Queue</h2>
+    <dl class="queue-card">
+      <div><dt>Running</dt><dd>{running.length} of {settings?.maxActive ?? "–"}</dd></div>
+      <div><dt>Waiting</dt><dd>{waiting.length}</dd></div>
+      <div>
+        <dt>Next scheduled</dt>
+        <dd>{scheduled.length ? formatStartTime(scheduled[0].start_at ?? 0) : "None"}</dd>
       </div>
+      {#if !queue.running}
+        <div class="held"><dt>On hold</dt><dd>until {queue.resumesAt}</dd></div>
+      {/if}
+    </dl>
 
-      {#if visible.length === 0}
-        <div class="empty">
-          <div class="empty-icon"><Icon name="download" size={28} /></div>
-          {#if downloads.length === 0}
-            <p><b>No downloads yet</b></p>
-            <p>Click <b>Add URL</b> or paste a link anywhere in this window.</p>
+    <div class="nav-spacer"></div>
+    <button class="nav-item" disabled={!settings} onclick={() => (showSettings = true)}>
+      <span class="nav-icon"><Icon name="settings" /></span>
+      <span class="nav-label">Settings</span>
+    </button>
+  </nav>
+
+  <main class="main">
+    <div class="commands" role="toolbar" aria-label="Download actions">
+      <button class="btn primary" onclick={() => openAdd()} title="Add a download (Ctrl+N)">
+        <Icon name="plus" stroke={2.2} /> Add download
+      </button>
+      <span class="sep"></span>
+      <button class="cmd" disabled={!can.resume} onclick={() => run(() => api.startDownloads(ids()))} title="Add to the queue; starts when there is a free slot">
+        <Icon name="play" /> Resume
+      </button>
+      <button class="cmd" disabled={!can.pause} onclick={() => run(() => api.pauseDownloads(ids()))}>
+        <Icon name="pause" /> Pause
+      </button>
+      <button class="cmd" disabled={!can.startNow} onclick={() => run(() => api.startNow(ids()))} title="Start right away, ignoring the queue limit and schedule (double-click)">
+        <Icon name="zap" /> Start now
+      </button>
+      <button class="cmd" disabled={!can.remove} onclick={() => (confirmRemove = true)} title="Remove from the list (Delete)">
+        <Icon name="trash" /> Remove
+      </button>
+      <span class="sep"></span>
+      <button class="cmd" disabled={!can.schedule} onclick={() => (scheduleIds = ids())} title="Start the selected downloads at a time you choose">
+        <Icon name="clock" /> Schedule
+      </button>
+      <span class="spacer"></span>
+      <label class="search">
+        <Icon name="search" size={14} />
+        <input type="search" placeholder="Search downloads" aria-label="Search downloads (Ctrl+F)" bind:value={search} bind:this={searchInput} />
+      </label>
+    </div>
+
+    {#if banner}
+      <div class="banner" role="alert">
+        <Icon name="alert" />
+        <span>{banner}</span>
+        <button class="icon-btn" aria-label="Dismiss" onclick={() => (banner = null)}><Icon name="x" size={14} /></button>
+      </div>
+    {/if}
+
+    <div class="content">
+      <div class="table-wrap">
+        <div class="table">
+          <div class="thead">
+            <span>Name</span><span class="num">Size</span><span>Progress</span><span class="num">Speed</span><span class="num">Left</span>
+          </div>
+
+          {#if visible.length === 0}
+            <div class="empty">
+              <AppLogo size={48} />
+              {#if needle}
+                <p>No downloads match “{search.trim()}”.</p>
+              {:else if downloads.length === 0}
+                <p><b>No downloads yet</b></p>
+                <p>Choose <b>Add download</b>, or paste a link anywhere in this window.</p>
+              {:else}
+                <p>Nothing in this category.</p>
+              {/if}
+            </div>
           {:else}
-            <p>Nothing in this category.</p>
+            <div class="rows" role="listbox" aria-label="Downloads" aria-multiselectable="true" tabindex="-1">
+              {#each visible as d (d.id)}
+                {@const st = statusLine(d)}
+                {@const pct = percent(d.downloaded, d.size)}
+                <div
+                  class="tr"
+                  class:selected={selected.has(d.id)}
+                  role="option"
+                  tabindex="-1"
+                  aria-selected={selected.has(d.id)}
+                  onclick={(e) => select(e, d.id)}
+                  ondblclick={() => activate(d)}
+                  oncontextmenu={(e) => contextMenu(e, d)}
+                  onkeydown={() => {}}>
+                  <div class="name" title={`${d.file_name}\n${d.url}`}>
+                    <FileIcon name={d.file_name} />
+                    <div class="name-text">
+                      <div class="fname">{d.file_name}</div>
+                      <div class="status {st.tone}"><Icon name={st.icon} size={12} stroke={2.4} />{st.text}</div>
+                    </div>
+                  </div>
+                  <span class="num">{formatBytes(d.size)}</span>
+                  <div class="progress">
+                    <SegmentBar {d} />
+                    <span class="pct">{pct === null ? formatBytes(d.downloaded) : `${Math.floor(pct)}%`}</span>
+                  </div>
+                  <span class="num">{d.status === "downloading" ? formatSpeed(d.speed) : ""}</span>
+                  <span class="num muted">
+                    {d.status === "downloading" && d.size != null ? formatEta(d.size - d.downloaded, d.speed) : ""}
+                  </span>
+                </div>
+              {/each}
+            </div>
           {/if}
         </div>
-      {:else}
-        <div class="rows" role="listbox" aria-multiselectable="true" tabindex="-1">
-          {#each visible as d (d.id)}
-            {@const pct = percent(d.downloaded, d.size)}
-            <div
-              class="tr"
-              class:selected={selected.has(d.id)}
-              role="option"
-              tabindex="-1"
-              aria-selected={selected.has(d.id)}
-              onclick={(e) => select(e, d.id)}
-              ondblclick={() => activate(d)}
-              onkeydown={() => {}}>
-              <span class="name" title={`${d.file_name}\n${d.url}`}>
-                <span class="ext">{extension(d.file_name) || "FILE"}</span>
-                <span class="fname">{d.file_name}</span>
-              </span>
-              <span class="num">{formatBytes(d.size)}</span>
-              <span class="progress">
-                <span class="bar" class:indeterminate={pct === null && d.status === "downloading"}>
-                  <span class="fill {d.status}" style:width="{pct ?? 0}%"></span>
-                </span>
-                <span class="pct">
-                  {pct === null ? formatBytes(d.downloaded) : `${pct.toFixed(pct >= 99.95 ? 0 : 1)}%`}
-                </span>
-              </span>
-              <span class="num">{d.status === "downloading" ? formatSpeed(d.speed) : ""}</span>
-              <span class="num">
-                {d.status === "downloading" && d.size != null ? formatEta(d.size - d.downloaded, d.speed) : ""}
-              </span>
-              <span class="status {d.status}" title={d.error ?? ""}>
-                {STATUS_LABEL[d.status]}
-              </span>
-            </div>
-          {/each}
-        </div>
-      {/if}
-    </main>
-  </div>
+      </div>
 
-  <footer class="statusbar">
-    <span>{downloads.length} downloads</span>
-    <span>{running.length} active</span>
-    {#if waiting}<span>{waiting} waiting</span>{/if}
-    {#if totalSpeed}<span class="speed">↓ {formatSpeed(totalSpeed)}</span>{/if}
-    {#if settings?.speedLimitKib}
-      <span title="Total speed limit (Settings)">limit {formatSpeed(settings.speedLimitKib * 1024)}</span>
-    {/if}
-    {#if !queue.running}
-      <span class="held" title="The queue only runs inside the scheduled hours (Settings)">
-        <Icon name="clock" size={13} />
-        Queue on hold{queue.resumesAt ? ` until ${queue.resumesAt}` : ""}
-      </span>
-    {/if}
-    {#if selection.length === 1 && selection[0].error}
-      <span class="err" title={selection[0].error}>{selection[0].error}</span>
-    {/if}
-  </footer>
+      <DetailsPane
+        d={focused}
+        laneSpeeds={focused ? (laneSpeeds[focused.id] ?? new Map()) : new Map()}
+        onopen={() => focused && run(() => api.openFile(focused.id))}
+        onshowfolder={() => focused && run(() => api.showInFolder(focused.id))} />
+    </div>
+
+    <footer class="statusbar">
+      <span>{running.length} downloading</span>
+      {#if waiting.length}<span>{waiting.length} waiting</span>{/if}
+      {#if scheduled.length}<span>{scheduled.length} scheduled</span>{/if}
+      {#if totalSpeed}<span class="strong">{formatSpeed(totalSpeed)} total</span>{/if}
+      <span>{settings?.speedLimitKib ? `Limit ${formatSpeed(settings.speedLimitKib * 1024)}` : "No speed limit"}</span>
+      {#if !queue.running}
+        <span class="held"><Icon name="clock" size={12} /> Queue on hold until {queue.resumesAt}</span>
+      {/if}
+    </footer>
+  </main>
 </div>
 
 {#if showAdd && settings}
@@ -342,9 +443,13 @@
   <SettingsDialog {settings} onsave={(s) => (settings = s)} onclose={() => (showSettings = false)} />
 {/if}
 
+{#if scheduleIds}
+  <ScheduleDialog ids={scheduleIds} defaultTime={settings?.scheduleStart ?? "02:00"} onclose={() => (scheduleIds = null)} />
+{/if}
+
 {#if confirmRemove}
   <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && (confirmRemove = false)}>
-    <div class="modal" role="alertdialog" aria-label="Remove downloads">
+    <div class="modal narrow" role="alertdialog" aria-label="Remove downloads">
       <h2>Remove {selected.size === 1 ? "this download" : `${selected.size} downloads`}?</h2>
       <p class="hint">Unfinished parts are always deleted.</p>
       <label class="check">
@@ -361,263 +466,179 @@
 
 <style>
   .app {
-    display: grid;
-    grid-template-rows: auto 1fr auto;
+    display: flex;
     height: 100vh;
+    min-width: 0;
   }
 
-  .toolbar {
+  /* Navigation pane */
+  .nav {
+    flex: 0 0 228px;
     display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 8px 12px;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
+    flex-direction: column;
+    gap: 2px;
+    padding: 12px 8px 10px;
+    overflow-y: auto;
   }
   .brand {
     display: flex;
     align-items: center;
-    gap: 8px;
-    width: 172px;
-    font-weight: 650;
+    gap: 10px;
+    padding: 4px 12px 14px;
     font-size: 14px;
-    letter-spacing: 0.2px;
+    font-weight: 600;
   }
-  .logo {
-    display: grid;
-    place-items: center;
-    width: 26px;
-    height: 26px;
-    border-radius: 7px;
+  .nav-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 36px;
+    padding: 8px 12px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    text-align: left;
+  }
+  .nav-item:hover:not(:disabled) {
+    background: var(--hover);
+  }
+  .nav-item.active {
+    background: var(--nav-active);
+    box-shadow: var(--nav-shadow);
+    font-weight: 600;
+  }
+  .nav-item.active::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 10px;
+    bottom: 10px;
+    width: 3px;
+    border-radius: 2px;
     background: var(--accent);
-    color: var(--accent-text);
+  }
+  .nav-icon {
+    display: flex;
+    color: var(--muted);
+  }
+  .nav-item.active .nav-icon {
+    color: var(--accent);
+  }
+  .nav-label {
+    flex: 1;
+  }
+  .nav-count {
+    color: var(--muted);
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+  }
+  .nav-heading {
+    margin: 18px 12px 6px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 400;
+  }
+  .queue-card {
+    margin: 0 4px;
+    padding: 10px 12px;
+    background: var(--panel);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .queue-card div {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .queue-card dd {
+    margin: 0;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .queue-card .held {
+    color: var(--warn);
+  }
+  .nav-spacer {
+    flex: 1;
+    min-height: 16px;
+  }
+
+  /* Main panel */
+  .main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    margin-top: 8px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-right: 0;
+    border-bottom: 0;
+    border-top-left-radius: 8px;
+  }
+  .commands {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--divider);
+    flex-wrap: wrap;
   }
   .sep {
     width: 1px;
     height: 22px;
     background: var(--border);
-    margin: 0 6px;
+    margin: 0 8px;
   }
   .spacer {
     flex: 1;
   }
-  .tool {
+  .cmd {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 7px;
+    min-height: 32px;
     padding: 6px 10px;
     border: 0;
     border-radius: 6px;
     background: transparent;
-    cursor: pointer;
-    white-space: nowrap;
   }
-  .tool:hover:not(:disabled) {
-    background: var(--surface-2);
+  .cmd:hover:not(:disabled) {
+    background: var(--hover);
   }
-  .tool:disabled {
-    opacity: 0.4;
-    cursor: default;
+  .cmd:active:not(:disabled) {
+    background: var(--pressed);
   }
-
-  .body {
-    display: grid;
-    grid-template-columns: 196px 1fr;
-    min-height: 0;
+  .cmd:disabled {
+    color: var(--idle);
   }
-
-  .sidebar {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 10px 8px;
-    border-right: 1px solid var(--border);
-    background: var(--surface);
-  }
-  .cat {
+  .search {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 7px 10px;
-    border: 0;
+    gap: 6px;
+    flex: 0 1 240px;
+    min-width: 130px;
+    padding: 0 10px;
+    border: 1px solid var(--field-border);
+    border-bottom-color: var(--field-underline);
     border-radius: 6px;
-    background: transparent;
+    background: var(--field);
     color: var(--muted);
-    cursor: pointer;
-    text-align: left;
   }
-  .cat span:nth-child(2) {
+  .search input {
     flex: 1;
-  }
-  .cat:hover {
-    background: var(--surface-2);
-    color: var(--text);
-  }
-  .cat.active {
-    background: var(--accent-soft);
-    color: var(--accent);
-    font-weight: 600;
-  }
-  .count {
-    font-size: 11.5px;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .list {
-    display: flex;
-    flex-direction: column;
     min-width: 0;
-    min-height: 0;
-  }
-
-  .thead,
-  .tr {
-    display: grid;
-    grid-template-columns: minmax(180px, 1fr) 84px minmax(120px, 190px) 90px 80px 96px;
-    gap: 12px;
-    align-items: center;
-    padding: 0 16px;
-  }
-  .thead {
-    height: 32px;
-    color: var(--muted);
-    font-size: 11.5px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    border-bottom: 1px solid var(--border);
-  }
-  .rows {
-    overflow-y: auto;
-    flex: 1;
+    padding: 6px 0;
+    border: 0;
+    background: transparent;
+    color: var(--text);
     outline: none;
   }
-  .tr {
-    height: 38px;
-    border-bottom: 1px solid var(--border);
-    cursor: default;
-  }
-  .tr:hover {
-    background: var(--surface);
-  }
-  .tr.selected {
-    background: var(--accent-soft);
-  }
-  .num {
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-  .name {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
-  }
-  .ext {
-    flex: none;
-    width: 38px;
-    padding: 2px 0;
-    border-radius: 4px;
-    background: var(--surface-2);
-    color: var(--muted);
-    font-size: 9.5px;
-    font-weight: 700;
-    text-align: center;
-    letter-spacing: 0.3px;
-  }
-  .fname {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .progress {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .bar {
-    position: relative;
-    flex: 1;
-    height: 6px;
-    border-radius: 3px;
-    background: var(--track);
-    overflow: hidden;
-  }
-  .fill {
-    position: absolute;
-    inset: 0 auto 0 0;
-    border-radius: 3px;
-    background: var(--muted);
-    transition: width 0.4s ease;
-  }
-  .fill.downloading {
-    background: var(--accent);
-  }
-  .fill.completed {
-    background: var(--ok);
-  }
-  .fill.failed {
-    background: var(--danger);
-  }
-  .bar.indeterminate .fill {
-    width: 30% !important;
-    animation: slide 1.2s ease-in-out infinite;
-  }
-  @keyframes slide {
-    from {
-      left: -30%;
-    }
-    to {
-      left: 100%;
-    }
-  }
-  .pct {
-    width: 48px;
-    text-align: right;
-    color: var(--muted);
-    font-size: 12px;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .status {
-    color: var(--muted);
-    white-space: nowrap;
-  }
-  .status.downloading {
-    color: var(--accent);
-  }
-  .status.completed {
-    color: var(--ok);
-  }
-  .status.failed {
-    color: var(--danger);
-  }
-
-  .empty {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 2px;
-    color: var(--muted);
-  }
-  .empty p {
-    margin: 0;
-  }
-  .empty b {
-    color: var(--text);
-  }
-  .empty-icon {
-    display: grid;
-    place-items: center;
-    width: 56px;
-    height: 56px;
-    margin-bottom: 10px;
-    border-radius: 14px;
-    background: var(--surface-2);
+  .search:focus-within {
+    border-bottom: 2px solid var(--accent);
   }
 
   .banner {
@@ -640,23 +661,150 @@
     border: 0;
     background: transparent;
     color: inherit;
-    cursor: pointer;
-    padding: 2px;
+    padding: 4px;
+    border-radius: 4px;
+  }
+
+  .content {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+  .table-wrap {
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    display: flex;
+  }
+  .table {
+    flex: 1;
+    min-width: 560px;
+    display: flex;
+    flex-direction: column;
+  }
+  .thead,
+  .tr {
+    display: grid;
+    grid-template-columns: minmax(150px, 1fr) 72px minmax(110px, 200px) 84px 76px;
+    gap: 14px;
+    align-items: center;
+    padding: 0 20px;
+  }
+  .thead {
+    height: 36px;
+    color: var(--muted);
+    font-size: 12px;
+    border-bottom: 1px solid var(--divider);
+  }
+  .rows {
+    flex: 1;
+    overflow-y: auto;
+    outline: none;
+  }
+  .tr {
+    height: 50px;
+    border-bottom: 1px solid var(--row-line);
+  }
+  .tr:hover {
+    background: var(--hover);
+  }
+  .tr.selected {
+    background: var(--selected);
+  }
+  .num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .muted {
+    color: var(--muted);
+  }
+  .name {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+  .name-text {
+    min-width: 0;
+  }
+  .fname,
+  .status {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .status {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+  }
+  .status.accent {
+    color: var(--accent);
+  }
+  .status.muted {
+    color: var(--muted);
+  }
+  .status.warn {
+    color: var(--warn);
+  }
+  .status.danger {
+    color: var(--danger);
+  }
+  .status.ok {
+    color: var(--ok);
+  }
+  .progress {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .progress :global(.bar) {
+    flex: 1;
+  }
+  .pct {
+    width: 40px;
+    flex: none;
+    text-align: right;
+    font-size: 12px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .empty {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    color: var(--muted);
+  }
+  .empty p {
+    margin: 0;
+  }
+  .empty :global(svg) {
+    margin-bottom: 10px;
+    opacity: 0.9;
+  }
+  .empty b {
+    color: var(--text);
   }
 
   .statusbar {
     display: flex;
-    gap: 18px;
-    padding: 5px 14px;
-    border-top: 1px solid var(--border);
-    background: var(--surface);
+    gap: 20px;
+    padding: 7px 20px;
+    border-top: 1px solid var(--divider);
     color: var(--muted);
     font-size: 12px;
     font-variant-numeric: tabular-nums;
-    min-width: 0;
+    flex-wrap: wrap;
   }
-  .statusbar .speed {
-    color: var(--accent);
+  .statusbar .strong {
+    color: var(--text);
     font-weight: 600;
   }
   .statusbar .held {
@@ -665,15 +813,31 @@
     gap: 5px;
     color: var(--warn);
   }
-  .statusbar .err {
-    color: var(--danger);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 
+  .narrow {
+    width: min(420px, calc(100vw - 32px));
+  }
   .hint {
     margin: 0;
     color: var(--muted);
+  }
+
+  /* Narrow windows: hide the details pane, then shrink the navigation. */
+  @media (max-width: 1080px) {
+    .content :global(.pane) {
+      display: none;
+    }
+  }
+  @media (max-width: 760px) {
+    .nav {
+      flex-basis: 64px;
+    }
+    .nav-label,
+    .nav-count,
+    .nav-heading,
+    .queue-card,
+    .brand span {
+      display: none;
+    }
   }
 </style>

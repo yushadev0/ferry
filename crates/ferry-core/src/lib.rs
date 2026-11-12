@@ -21,6 +21,7 @@ mod limiter;
 mod probe;
 mod store;
 
+pub use download::Segment;
 pub use engine::{Engine, EngineConfig, Event, Request};
 pub use error::{Error, Result};
 pub use probe::{probe, ProbeInfo};

@@ -1,6 +1,7 @@
 //! Ferry Download Center desktop app: wires `ferry-core` to a Tauri web UI.
 
 mod commands;
+mod file_icons;
 mod settings;
 
 use std::{path::PathBuf, sync::Mutex, time::Duration};
@@ -38,6 +39,7 @@ pub struct AppState {
     settings_path: PathBuf,
     /// Wakes the scheduler when the settings change.
     schedule_changed: Notify,
+    pub file_icons: file_icons::FileIcons,
 }
 
 impl AppState {
@@ -55,6 +57,11 @@ impl AppState {
         *self.settings.lock().unwrap_or_else(|e| e.into_inner()) = new.clone();
         self.schedule_changed.notify_one();
         Ok(new)
+    }
+
+    /// Re-checks schedules now instead of at the next tick.
+    pub fn wake_scheduler(&self) {
+        self.schedule_changed.notify_one();
     }
 
     pub fn queue_state(&self) -> QueueState {
@@ -129,7 +136,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Runs the queue only inside the schedule window, checking every 15 seconds
+/// Runs the queue only inside the schedule window, checking every 5 seconds
 /// and whenever the settings change.
 fn run_scheduler(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -142,9 +149,12 @@ fn run_scheduler(app: AppHandle) {
             }
             // Also starts queued downloads after launch.
             state.engine.set_queue_running(wanted).await;
+            if let Err(e) = state.engine.start_due(now.timestamp()) {
+                tracing::error!(error = %e, "could not start scheduled downloads");
+            }
             let _ = app.emit(QUEUE_EVENT, state.queue_state());
             tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(15)) => {}
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {}
                 _ = state.schedule_changed.notified() => {}
             }
         }
@@ -198,9 +208,18 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let paths = app.path();
-            let data_dir = paths.app_data_dir()?;
+            // FERRY_DATA_DIR keeps the database and settings elsewhere, so a
+            // development run can't touch your real downloads.
+            let override_dir = std::env::var_os("FERRY_DATA_DIR").map(PathBuf::from);
+            let data_dir = match &override_dir {
+                Some(dir) => dir.clone(),
+                None => paths.app_data_dir()?,
+            };
             std::fs::create_dir_all(&data_dir)?;
-            let settings_path = paths.app_config_dir()?.join("settings.json");
+            let settings_path = match &override_dir {
+                Some(dir) => dir.join("settings.json"),
+                None => paths.app_config_dir()?.join("settings.json"),
+            };
             let default_dir = paths
                 .download_dir()
                 .unwrap_or_else(|_| data_dir.join("downloads"));
@@ -214,6 +233,7 @@ pub fn run() {
                 settings: Mutex::new(settings),
                 settings_path,
                 schedule_changed: Notify::new(),
+                file_icons: file_icons::FileIcons::new(paths.app_cache_dir()?),
             });
             run_scheduler(app.handle().clone());
             build_tray(app)?;
@@ -238,6 +258,8 @@ pub fn run() {
             commands::add_download,
             commands::start_downloads,
             commands::start_now,
+            commands::schedule_downloads,
+            commands::file_icon,
             commands::queue_state,
             commands::pause_downloads,
             commands::remove_downloads,

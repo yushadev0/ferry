@@ -16,6 +16,8 @@ pub type DownloadId = i64;
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     Queued,
+    /// Waits for its start time, then joins the queue.
+    Scheduled,
     Downloading,
     Paused,
     Completed,
@@ -26,6 +28,7 @@ impl Status {
     pub fn as_str(self) -> &'static str {
         match self {
             Status::Queued => "queued",
+            Status::Scheduled => "scheduled",
             Status::Downloading => "downloading",
             Status::Paused => "paused",
             Status::Completed => "completed",
@@ -36,6 +39,7 @@ impl Status {
     fn parse(s: &str) -> Self {
         match s {
             "queued" => Status::Queued,
+            "scheduled" => Status::Scheduled,
             "downloading" => Status::Downloading,
             "paused" => Status::Paused,
             "completed" => Status::Completed,
@@ -58,6 +62,10 @@ pub struct DownloadInfo {
     pub error: Option<String>,
     /// Unix timestamp (seconds).
     pub created_at: i64,
+    /// When a `scheduled` download joins the queue (Unix seconds).
+    pub start_at: Option<i64>,
+    /// Byte ranges and how far each got; empty once finished.
+    pub segments: Vec<Segment>,
     #[serde(skip)]
     pub etag: Option<String>,
     #[serde(skip)]
@@ -104,7 +112,7 @@ CREATE INDEX IF NOT EXISTS segments_download ON segments(download_id);
 ";
 
 const COLUMNS: &str = "id, url, dir, file_name, size, downloaded, resumable, status, error, \
-                       created_at, etag, last_modified, headers";
+                       created_at, etag, last_modified, headers, start_at";
 
 pub(crate) struct Store {
     conn: Mutex<Connection>,
@@ -160,21 +168,33 @@ impl Store {
     }
 
     pub fn get(&self, id: DownloadId) -> Result<DownloadInfo> {
-        self.conn()
+        let mut info = self
+            .conn()
             .query_row(
                 &format!("SELECT {COLUMNS} FROM downloads WHERE id = ?1"),
                 [id],
                 row_to_info,
             )
             .optional()?
-            .ok_or(Error::NotFound(id))
+            .ok_or(Error::NotFound(id))?;
+        info.segments = self.load_segments(id)?;
+        Ok(info)
     }
 
     pub fn list(&self) -> Result<Vec<DownloadInfo>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!("SELECT {COLUMNS} FROM downloads ORDER BY id"))?;
-        let rows = stmt.query_map([], row_to_info)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let rows: Vec<DownloadInfo> = stmt
+            .query_map([], row_to_info)?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        drop(conn);
+        rows.into_iter()
+            .map(|mut info| {
+                info.segments = self.load_segments(info.id)?;
+                Ok(info)
+            })
+            .collect()
     }
 
     pub fn name_taken(&self, dir: &Path, name: &str) -> Result<bool> {
@@ -186,8 +206,10 @@ impl Store {
     }
 
     pub fn set_status(&self, id: DownloadId, status: Status, error: Option<&str>) -> Result<()> {
+        // Only `scheduled` keeps a start time.
         self.conn().execute(
-            "UPDATE downloads SET status = ?2, error = ?3 WHERE id = ?1",
+            "UPDATE downloads SET status = ?2, error = ?3, \
+             start_at = CASE WHEN ?2 = 'scheduled' THEN start_at END WHERE id = ?1",
             params![id, status.as_str(), error],
         )?;
         Ok(())
@@ -276,10 +298,30 @@ impl Store {
         Ok(())
     }
 
+    /// Marks a download to join the queue at `at` (Unix seconds).
+    pub fn schedule(&self, id: DownloadId, at: i64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE downloads SET status = 'scheduled', error = NULL, start_at = ?2 WHERE id = ?1",
+            params![id, at],
+        )?;
+        Ok(())
+    }
+
+    /// Scheduled downloads whose time has come.
+    pub fn due_scheduled(&self, now: i64) -> Result<Vec<DownloadId>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id FROM downloads WHERE status = 'scheduled' AND start_at <= ?1 \
+             ORDER BY start_at, id",
+        )?;
+        let rows = stmt.query_map([now], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Puts a download at the back of the queue.
     pub fn enqueue(&self, id: DownloadId) -> Result<()> {
         self.conn().execute(
-            "UPDATE downloads SET status = 'queued', error = NULL, \
+            "UPDATE downloads SET status = 'queued', error = NULL, start_at = NULL, \
              queue_pos = (SELECT COALESCE(MAX(queue_pos), 0) + 1 FROM downloads) \
              WHERE id = ?1",
             [id],
@@ -322,6 +364,8 @@ fn row_to_info(r: &Row<'_>) -> rusqlite::Result<DownloadInfo> {
         etag: r.get(10)?,
         last_modified: r.get(11)?,
         headers: serde_json::from_str(&headers).unwrap_or_default(),
+        start_at: r.get(13)?,
+        segments: Vec::new(),
     })
 }
 
@@ -336,6 +380,20 @@ fn migrate(conn: &Connection) -> Result<()> {
             conn.execute_batch("ALTER TABLE downloads ADD COLUMN queue_pos INTEGER")?;
         }
         conn.pragma_update(None, "user_version", 1)?;
+    }
+    if version < 2 {
+        add_column(conn, "start_at", "INTEGER")?;
+        conn.pragma_update(None, "user_version", 2)?;
+    }
+    Ok(())
+}
+
+fn add_column(conn: &Connection, name: &str, kind: &str) -> Result<()> {
+    let exists = conn
+        .prepare("SELECT 1 FROM pragma_table_info('downloads') WHERE name = ?1")?
+        .exists([name])?;
+    if !exists {
+        conn.execute_batch(&format!("ALTER TABLE downloads ADD COLUMN {name} {kind}"))?;
     }
     Ok(())
 }

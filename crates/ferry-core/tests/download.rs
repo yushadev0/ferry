@@ -53,7 +53,12 @@ async fn wait_settled(rx: &mut Receiver<Event>, id: DownloadId) -> (Status, Opti
             error,
         } = next_event(rx).await
         {
-            if i == id && !matches!(status, Status::Downloading | Status::Queued) {
+            if i == id
+                && !matches!(
+                    status,
+                    Status::Downloading | Status::Queued | Status::Scheduled
+                )
+            {
                 return (status, error);
             }
         }
@@ -447,7 +452,9 @@ async fn queue_runs_one_download_at_a_time() {
                     running.remove(&id);
                     finished.push(id);
                 }
-                Status::Failed | Status::Paused => panic!("unexpected {status:?}"),
+                Status::Failed | Status::Paused | Status::Scheduled => {
+                    panic!("unexpected {status:?}")
+                }
                 Status::Queued => {}
             }
         }
@@ -576,4 +583,102 @@ async fn pause_all_and_queued_downloads() {
     assert_eq!(engine.get(b).unwrap().status, Status::Paused);
     assert!(engine.active_ids().is_empty());
     assert!(engine.queue_running());
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scheduled_downloads_start_when_due() {
+    let server = common::spawn(common::Options::default()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::in_memory(config()).unwrap();
+    let mut rx = engine.subscribe();
+    let id = engine
+        .add(Request::new(&server.url, dir.path()))
+        .await
+        .unwrap();
+
+    let at = unix_now() + 3600;
+    engine.schedule(id, at).await.unwrap();
+    let info = engine.get(id).unwrap();
+    assert_eq!((info.status, info.start_at), (Status::Scheduled, Some(at)));
+
+    // Not yet due.
+    assert!(engine.start_due(at - 1).unwrap().is_empty());
+    assert_eq!(engine.get(id).unwrap().status, Status::Scheduled);
+
+    assert_eq!(engine.start_due(at).unwrap(), vec![id]);
+    assert_eq!(wait_settled(&mut rx, id).await, (Status::Completed, None));
+    assert_eq!(engine.get(id).unwrap().start_at, None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scheduling_a_running_download_keeps_its_progress() {
+    let server = common::spawn(common::Options::default()).await;
+    *server.state.chunk_delay.lock().unwrap() = Some(Duration::from_millis(10));
+    let dir = tempfile::tempdir().unwrap();
+    let len = server.state.data.len() as u64;
+    let engine = Engine::in_memory(config()).unwrap();
+    let mut rx = engine.subscribe();
+    let id = engine
+        .add(Request::new(&server.url, dir.path()))
+        .await
+        .unwrap();
+    engine.start(id).unwrap();
+    wait_progress(&mut rx, id, len / 3).await;
+
+    engine.schedule(id, unix_now() + 60).await.unwrap();
+    let info = engine.get(id).unwrap();
+    assert_eq!(info.status, Status::Scheduled);
+    assert!(info.downloaded >= len / 3);
+    assert!(!info.segments.is_empty());
+    assert_eq!(
+        info.segments.iter().map(|s| s.downloaded()).sum::<u64>(),
+        info.downloaded
+    );
+
+    // Pausing a scheduled download cancels the schedule.
+    engine.pause(id).await.unwrap();
+    let info = engine.get(id).unwrap();
+    assert_eq!((info.status, info.start_at), (Status::Paused, None));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn progress_events_carry_the_connection_map() {
+    let server = common::spawn(common::Options::default()).await;
+    *server.state.chunk_delay.lock().unwrap() = Some(Duration::from_millis(5));
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::in_memory(config()).unwrap();
+    let mut rx = engine.subscribe();
+    let id = engine
+        .add(Request::new(&server.url, dir.path()))
+        .await
+        .unwrap();
+    engine.start(id).unwrap();
+
+    loop {
+        if let Event::Progress {
+            id: i,
+            downloaded,
+            connections,
+            segments,
+            ..
+        } = next_event(&mut rx).await
+        {
+            if i == id && connections > 1 {
+                assert!(segments.len() >= connections);
+                assert_eq!(
+                    segments.iter().map(|s| s.downloaded()).sum::<u64>(),
+                    downloaded
+                );
+                break;
+            }
+        }
+    }
+    engine.pause(id).await.unwrap();
 }

@@ -176,7 +176,7 @@
     padding: 6px 8px;
     border: 1px solid var(--border);
     border-radius: 6px;
-    background: var(--surface);
+    background: var(--field);
     user-select: text;
   }
   input[type="number"] {

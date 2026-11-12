@@ -118,6 +118,10 @@ pub enum Event {
         total: Option<u64>,
         /// Bytes per second.
         speed: u64,
+        /// Connections currently downloading.
+        connections: usize,
+        /// Every segment and how far it got (a connection map).
+        segments: Vec<download::Segment>,
     },
     Removed {
         id: DownloadId,
@@ -460,6 +464,36 @@ impl Engine {
         Ok(())
     }
 
+    /// Has a download join the queue at `at` (Unix seconds). A running
+    /// download is paused first, keeping its progress. Call
+    /// [`Engine::start_due`] regularly to act on schedules.
+    pub async fn schedule(&self, id: DownloadId, at: i64) -> Result<()> {
+        let info = self.inner.store.get(id)?;
+        if info.status == Status::Completed {
+            return Err(Error::InvalidState("download is already completed"));
+        }
+        self.pause(id).await?;
+        self.inner.store.schedule(id, at)?;
+        self.inner.emit(Event::Status {
+            id,
+            status: Status::Scheduled,
+            error: None,
+        });
+        Ok(())
+    }
+
+    /// Queues every scheduled download whose time is at or before `now`
+    /// (Unix seconds) and returns their ids.
+    ///
+    /// Must be called from within a Tokio runtime.
+    pub fn start_due(&self, now: i64) -> Result<Vec<DownloadId>> {
+        let due = self.inner.store.due_scheduled(now)?;
+        for &id in &due {
+            self.start(id)?;
+        }
+        Ok(due)
+    }
+
     /// Starts a download right away, ignoring the queue limit and schedule.
     ///
     /// Must be called from within a Tokio runtime.
@@ -486,7 +520,7 @@ impl Engine {
             return Ok(());
         }
         let info = self.inner.store.get(id)?;
-        if info.status == Status::Queued {
+        if matches!(info.status, Status::Queued | Status::Scheduled) {
             self.inner.store.set_status(id, Status::Paused, None)?;
             self.inner.emit(Event::Status {
                 id,
