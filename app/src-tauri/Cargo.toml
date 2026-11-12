@@ -1,0 +1,30 @@
+[package]
+name = "ferry-app"
+description = "Ferry Download Center desktop app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+# The `_lib` suffix keeps the lib name distinct from the binary on Windows
+# (https://github.com/rust-lang/cargo/issues/8519).
+name = "ferry_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+ferry-core = { path = "../../crates/ferry-core" }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-single-instance = "2"
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true

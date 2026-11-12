@@ -1,0 +1,136 @@
+//! Commands the web UI calls through `invoke`.
+
+use std::path::PathBuf;
+
+use ferry_core::{DownloadId, DownloadInfo, ProbeInfo, Request, Status};
+use serde::Deserialize;
+use tauri::{AppHandle, State};
+use tauri_plugin_opener::OpenerExt;
+
+use crate::{settings::Settings, AppState};
+
+type CmdResult<T> = Result<T, String>;
+
+fn err(e: impl std::fmt::Display) -> String {
+    e.to_string()
+}
+
+#[tauri::command]
+pub fn list_downloads(state: State<'_, AppState>) -> CmdResult<Vec<DownloadInfo>> {
+    state.engine.list().map_err(err)
+}
+
+#[tauri::command]
+pub fn get_download(state: State<'_, AppState>, id: DownloadId) -> CmdResult<DownloadInfo> {
+    state.engine.get(id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn inspect_url(state: State<'_, AppState>, url: String) -> CmdResult<ProbeInfo> {
+    state.engine.probe(url.trim(), &[]).await.map_err(err)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddDownload {
+    url: String,
+    dir: Option<PathBuf>,
+    file_name: Option<String>,
+    #[serde(default)]
+    headers: Vec<(String, String)>,
+    #[serde(default = "yes")]
+    start: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[tauri::command]
+pub async fn add_download(state: State<'_, AppState>, req: AddDownload) -> CmdResult<DownloadId> {
+    let dir = match req.dir {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => state.settings().download_dir,
+    };
+    let id = state
+        .engine
+        .add(Request {
+            url: req.url.trim().to_string(),
+            dir,
+            file_name: req.file_name.filter(|n| !n.trim().is_empty()),
+            headers: req.headers,
+        })
+        .await
+        .map_err(err)?;
+    if req.start {
+        state.engine.start(id).map_err(err)?;
+    }
+    Ok(id)
+}
+
+// Async so it runs on the Tokio runtime that download tasks are spawned on.
+#[tauri::command]
+pub async fn start_downloads(state: State<'_, AppState>, ids: Vec<DownloadId>) -> CmdResult<()> {
+    for id in ids {
+        let info = state.engine.get(id).map_err(err)?;
+        if info.status != Status::Completed {
+            state.engine.start(id).map_err(err)?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn pause_downloads(state: State<'_, AppState>, ids: Vec<DownloadId>) -> CmdResult<()> {
+    for id in ids {
+        state.engine.pause(id).await.map_err(err)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn remove_downloads(
+    state: State<'_, AppState>,
+    ids: Vec<DownloadId>,
+    delete_files: bool,
+) -> CmdResult<()> {
+    for id in ids {
+        state.engine.remove(id, delete_files).await.map_err(err)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_file(app: AppHandle, state: State<'_, AppState>, id: DownloadId) -> CmdResult<()> {
+    let info = state.engine.get(id).map_err(err)?;
+    if info.status != Status::Completed {
+        return Err("The download is not finished yet.".into());
+    }
+    let path = info.dir.join(&info.file_name);
+    app.opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub fn show_in_folder(app: AppHandle, state: State<'_, AppState>, id: DownloadId) -> CmdResult<()> {
+    let info = state.engine.get(id).map_err(err)?;
+    let file = info.dir.join(&info.file_name);
+    if file.exists() {
+        app.opener().reveal_item_in_dir(file).map_err(err)
+    } else {
+        app.opener()
+            .open_path(info.dir.to_string_lossy(), None::<&str>)
+            .map_err(err)
+    }
+}
+
+#[tauri::command]
+pub fn get_settings(state: State<'_, AppState>) -> Settings {
+    state.settings()
+}
+
+#[tauri::command]
+pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> CmdResult<Settings> {
+    state.update_settings(settings).map_err(err)
+}
