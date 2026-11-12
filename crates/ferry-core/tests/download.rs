@@ -12,6 +12,10 @@ fn config() -> EngineConfig {
         retry_base_delay: Duration::from_millis(20),
         progress_interval: Duration::from_millis(20),
         save_interval: Duration::from_millis(20),
+        busy_retry_delay: Duration::from_millis(100),
+        // The local server is so fast that staggered workers would find the
+        // file already downloaded; start them together.
+        connection_stagger: Duration::ZERO,
         ..EngineConfig::default()
     }
 }
@@ -273,4 +277,116 @@ async fn duplicate_names_get_numbered_and_remove_cleans_up() {
     assert!(!dir.path().join("test.bin").exists());
     assert!(matches!(engine.get(a), Err(Error::NotFound(_))));
     assert_eq!(engine.list().unwrap().len(), 1);
+}
+
+#[test]
+fn start_outside_runtime_is_an_error_not_a_panic() {
+    let engine = Engine::in_memory(config()).unwrap();
+    let err = engine.start(1).unwrap_err();
+    assert!(matches!(err, Error::InvalidState(_)), "{err}");
+}
+
+#[tokio::test]
+async fn connection_errors_name_the_cause() {
+    // Nothing listens on this port, so the connection is refused.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/file", listener.local_addr().unwrap());
+    drop(listener);
+    let engine = Engine::in_memory(config()).unwrap();
+    let message = engine.probe(&url, &[]).await.unwrap_err().to_string();
+    assert!(message.contains("could not connect"), "{message}");
+    assert!(!message.contains("error sending request"), "{message}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn adapts_to_servers_that_limit_connections() {
+    let server = common::spawn(common::Options::default()).await;
+    *server.state.max_connections.lock().unwrap() = Some(2);
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::in_memory(EngineConfig {
+        segments: 8,
+        ..config()
+    })
+    .unwrap();
+    let mut rx = engine.subscribe();
+
+    let id = engine
+        .add(Request::new(&server.url, dir.path()))
+        .await
+        .unwrap();
+    engine.start(id).unwrap();
+    assert_eq!(wait_settled(&mut rx, id).await, (Status::Completed, None));
+    assert_eq!(
+        std::fs::read(dir.path().join("test.bin")).unwrap(),
+        server.state.data
+    );
+    assert!(server.state.refused.load(Ordering::SeqCst) > 0);
+    assert!(server.state.peak_connections.load(Ordering::SeqCst) <= 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn single_connection_server_still_completes() {
+    let server = common::spawn(common::Options::default()).await;
+    *server.state.max_connections.lock().unwrap() = Some(1);
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::in_memory(config()).unwrap();
+    let mut rx = engine.subscribe();
+
+    let id = engine
+        .add(Request::new(&server.url, dir.path()))
+        .await
+        .unwrap();
+    engine.start(id).unwrap();
+    assert_eq!(wait_settled(&mut rx, id).await, (Status::Completed, None));
+    assert_eq!(
+        std::fs::read(dir.path().join("test.bin")).unwrap(),
+        server.state.data
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn request_rate_limits_are_handled_with_few_requests() {
+    let server = common::spawn(common::Options::default()).await;
+    *server.state.min_request_interval.lock().unwrap() = Some(Duration::from_millis(250));
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::in_memory(EngineConfig {
+        segments: 8,
+        ..config()
+    })
+    .unwrap();
+    let mut rx = engine.subscribe();
+
+    let id = engine
+        .add(Request::new(&server.url, dir.path()))
+        .await
+        .unwrap();
+    engine.start(id).unwrap();
+    assert_eq!(wait_settled(&mut rx, id).await, (Status::Completed, None));
+    assert_eq!(
+        std::fs::read(dir.path().join("test.bin")).unwrap(),
+        server.state.data
+    );
+
+    // Accepted connections carry on into neighbouring segments instead of
+    // asking for each one separately.
+    let accepted = server.state.range_requests.load(Ordering::SeqCst);
+    assert!(accepted <= 3, "{accepted} range requests were needed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn inspect_add_and_start_need_one_probe() {
+    let server = common::spawn(common::Options::default()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::in_memory(config()).unwrap();
+    let mut rx = engine.subscribe();
+
+    let info = engine.probe(&server.url, &[]).await.unwrap();
+    assert_eq!(info.filename.as_deref(), Some("test.bin"));
+    let id = engine
+        .add(Request::new(&server.url, dir.path()))
+        .await
+        .unwrap();
+    engine.start(id).unwrap();
+    assert_eq!(wait_settled(&mut rx, id).await, (Status::Completed, None));
+    assert_eq!(server.state.probe_requests.load(Ordering::SeqCst), 1);
 }

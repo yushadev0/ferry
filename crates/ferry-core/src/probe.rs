@@ -3,10 +3,12 @@ use reqwest::{
     Client, StatusCode,
 };
 
+use serde::Serialize;
+
 use crate::{error::check_status, filename, Result};
 
 /// What the server tells us about a file before downloading it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProbeInfo {
     /// Total size in bytes, when the server reports it.
     pub size: Option<u64>,
@@ -28,7 +30,7 @@ pub async fn probe(client: &Client, url: &str, headers: &HeaderMap) -> Result<Pr
         .send()
         .await?;
     let status = resp.status();
-    check_status(status)?;
+    check_status(status, resp.headers())?;
 
     let h = resp.headers();
     let text = |name| h.get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);

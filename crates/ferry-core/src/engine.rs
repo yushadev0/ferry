@@ -3,9 +3,9 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, RwLock,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RANGE};
@@ -15,10 +15,16 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     download, filename,
-    probe::probe,
+    probe::{probe, ProbeInfo},
     store::{DownloadId, DownloadInfo, NewDownload, Status, Store},
     Error, Result,
 };
+
+/// URL and extra headers of a probe.
+type ProbeKey = (String, Vec<(String, String)>);
+
+/// How long a probe answer is trusted instead of asking the server again.
+const PROBE_REUSE: Duration = Duration::from_secs(30);
 
 /// Tunables for the engine.
 #[derive(Debug, Clone)]
@@ -37,6 +43,12 @@ pub struct EngineConfig {
     pub progress_interval: Duration,
     /// How often segment progress is written to the database.
     pub save_interval: Duration,
+    /// Delay between opening the connections of one download, so servers
+    /// that limit request rates are not hit by a burst.
+    pub connection_stagger: Duration,
+    /// First wait after the server answers 429/503 without `Retry-After`;
+    /// grows linearly with each attempt (capped at 10x).
+    pub busy_retry_delay: Duration,
     pub user_agent: String,
 }
 
@@ -50,6 +62,8 @@ impl Default for EngineConfig {
             read_timeout: Duration::from_secs(30),
             progress_interval: Duration::from_millis(500),
             save_interval: Duration::from_secs(1),
+            connection_stagger: Duration::from_millis(150),
+            busy_retry_delay: Duration::from_secs(1),
             user_agent: format!("Ferry/{}", crate::VERSION),
         }
     }
@@ -110,19 +124,41 @@ struct Active {
 pub(crate) struct Inner {
     pub client: reqwest::Client,
     pub store: Store,
-    pub config: EngineConfig,
+    config: RwLock<EngineConfig>,
     events: broadcast::Sender<Event>,
     active: Mutex<HashMap<DownloadId, Active>>,
     generation: AtomicU64,
+    /// Probe results from `add`, reused by an immediate `start` to save a request.
+    recent_probes: Mutex<HashMap<DownloadId, (Instant, ProbeInfo)>>,
+    /// Results of [`Engine::probe`] by URL and headers, reused by `add`.
+    url_probes: Mutex<HashMap<ProbeKey, (Instant, ProbeInfo)>>,
 }
 
 impl Inner {
+    /// A snapshot of the current configuration.
+    pub fn config(&self) -> EngineConfig {
+        self.config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     pub fn emit(&self, event: Event) {
         let _ = self.events.send(event);
     }
 
     fn active(&self) -> std::sync::MutexGuard<'_, HashMap<DownloadId, Active>> {
         self.active.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The probe made by `add`, if it is fresh enough to trust.
+    pub fn take_recent_probe(&self, id: DownloadId) -> Option<ProbeInfo> {
+        let (at, info) = self
+            .recent_probes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id)?;
+        (at.elapsed() < PROBE_REUSE).then_some(info)
     }
 
     /// Called by a finished download task to unregister itself.
@@ -162,12 +198,42 @@ impl Engine {
             inner: Arc::new(Inner {
                 client,
                 store,
-                config,
+                config: RwLock::new(config),
                 events,
                 active: Mutex::new(HashMap::new()),
                 generation: AtomicU64::new(0),
+                recent_probes: Mutex::new(HashMap::new()),
+                url_probes: Mutex::new(HashMap::new()),
             }),
         })
+    }
+
+    /// Current configuration.
+    pub fn config(&self) -> EngineConfig {
+        self.inner.config()
+    }
+
+    /// Replaces the configuration. Running downloads keep their settings until
+    /// restarted; the user agent only changes when the engine is reopened.
+    pub fn set_config(&self, config: EngineConfig) {
+        *self.inner.config.write().unwrap_or_else(|e| e.into_inner()) = config;
+    }
+
+    /// Asks the server about a URL without adding it (for an "add download"
+    /// dialog). A following [`Engine::add`] of the same URL reuses the answer.
+    pub async fn probe(&self, url: &str, headers: &[(String, String)]) -> Result<ProbeInfo> {
+        let info = probe(&self.inner.client, url, &build_headers(headers)).await?;
+        let mut cache = self
+            .inner
+            .url_probes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        cache.retain(|_, (at, _)| at.elapsed() < PROBE_REUSE);
+        cache.insert(
+            (url.to_string(), headers.to_vec()),
+            (Instant::now(), info.clone()),
+        );
+        Ok(info)
     }
 
     /// Receives engine events. Slow receivers may miss progress events.
@@ -178,7 +244,18 @@ impl Engine {
     /// Probes the URL and stores a new `queued` download. Call [`Engine::start`] to begin.
     pub async fn add(&self, req: Request) -> Result<DownloadId> {
         let headers = build_headers(&req.headers);
-        let info = probe(&self.inner.client, &req.url, &headers).await?;
+        let cached = self
+            .inner
+            .url_probes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&(req.url.clone(), req.headers.clone()))
+            .filter(|(at, _)| at.elapsed() < PROBE_REUSE)
+            .map(|(_, info)| info);
+        let info = match cached {
+            Some(info) => info,
+            None => self.probe_patiently(&req.url, &headers).await?,
+        };
 
         tokio::fs::create_dir_all(&req.dir).await?;
         let suggested = req
@@ -201,12 +278,39 @@ impl Engine {
             last_modified: info.last_modified.as_deref(),
             headers: &req.headers,
         })?;
+        self.inner
+            .recent_probes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, (Instant::now(), info));
         self.inner.emit(Event::Added { id });
         Ok(id)
     }
 
+    /// Probes, waiting out a couple of "too many requests" answers.
+    async fn probe_patiently(&self, url: &str, headers: &HeaderMap) -> Result<ProbeInfo> {
+        let mut attempt = 0;
+        loop {
+            match probe(&self.inner.client, url, headers).await {
+                Err(Error::Busy { retry_after, .. }) if attempt < 3 => {
+                    attempt += 1;
+                    let wait = retry_after
+                        .unwrap_or(self.inner.config().busy_retry_delay * attempt)
+                        .min(Duration::from_secs(10));
+                    tokio::time::sleep(wait).await;
+                }
+                result => return result,
+            }
+        }
+    }
+
     /// Starts or resumes a download in the background.
+    ///
+    /// Must be called from within a Tokio runtime.
     pub fn start(&self, id: DownloadId) -> Result<()> {
+        let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
+            Error::InvalidState("Engine::start must be called inside a Tokio runtime")
+        })?;
         let info = self.inner.store.get(id)?;
         if info.status == Status::Completed {
             return Err(Error::InvalidState("download is already completed"));
@@ -224,7 +328,7 @@ impl Engine {
 
         let generation = self.inner.generation.fetch_add(1, Ordering::Relaxed);
         let token = CancellationToken::new();
-        let handle = tokio::spawn(download::run(
+        let handle = runtime.spawn(download::run(
             self.inner.clone(),
             id,
             generation,

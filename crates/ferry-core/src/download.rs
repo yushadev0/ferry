@@ -99,6 +99,12 @@ struct State {
     segs: Vec<Segment>,
     in_use: Vec<bool>,
     complete: Vec<bool>,
+    /// Workers still running. A worker turned away by the server (HTTP 429/503)
+    /// retires while others remain, so the download settles on the number of
+    /// connections the server accepts.
+    workers: usize,
+    /// The server has refused a connection; stop splitting to avoid more requests.
+    throttled: bool,
 }
 
 impl State {
@@ -107,11 +113,31 @@ impl State {
             in_use: vec![false; segs.len()],
             complete: segs.iter().map(Segment::is_done).collect(),
             segs,
+            workers: 0,
+            throttled: false,
         }
     }
 
     fn downloaded(&self) -> u64 {
         self.segs.iter().map(Segment::downloaded).sum()
+    }
+
+    /// When segment `*idx` is finished at `pos` and the segment starting at
+    /// `pos` is untouched and idle, takes it over so the same connection keeps
+    /// reading instead of opening a new one.
+    fn chain(&mut self, idx: &mut usize, pos: u64) -> bool {
+        let next = (0..self.segs.len()).find(|&j| {
+            self.segs[j].start == pos
+                && self.segs[j].pos == pos
+                && !self.in_use[j]
+                && !self.complete[j]
+        });
+        let Some(next) = next else { return false };
+        self.complete[*idx] = true;
+        self.in_use[*idx] = false;
+        self.in_use[next] = true;
+        *idx = next;
+        true
     }
 
     /// Hands out an idle segment, or splits the largest busy one.
@@ -120,7 +146,7 @@ impl State {
             self.in_use[i] = true;
             return Some(i);
         }
-        if !allow_split {
+        if !allow_split || self.throttled {
             return None;
         }
         let (i, remaining) = (0..self.segs.len())
@@ -174,16 +200,20 @@ pub(crate) async fn run(
 
 /// Returns `Ok(true)` when the file is complete, `Ok(false)` when paused.
 async fn execute(inner: &Arc<Inner>, id: DownloadId, token: &CancellationToken) -> Result<bool> {
-    let cfg = &inner.config;
+    let cfg = &inner.config();
     let rec = inner.store.get(id)?;
     let headers = build_headers(&rec.headers);
 
-    let Some(info) = probe_with_retry(inner, &rec.url, &headers, token).await? else {
-        return Ok(false);
-    };
-
     let part = rec.dir.join(part_name(&rec.file_name));
     let saved = inner.store.load_segments(id)?;
+    let fresh = inner.take_recent_probe(id).filter(|_| saved.is_empty());
+    let info = match fresh {
+        Some(info) => info,
+        None => match probe_with_retry(inner, &rec.url, &headers, token).await? {
+            Some(info) => info,
+            None => return Ok(false),
+        },
+    };
     let validators_match = match (&rec.etag, &rec.last_modified) {
         (Some(etag), _) => info.etag.as_ref() == Some(etag),
         (None, Some(lm)) => info.last_modified.as_ref() == Some(lm),
@@ -228,8 +258,10 @@ async fn execute(inner: &Arc<Inner>, id: DownloadId, token: &CancellationToken) 
     let workers_token = token.child_token();
     let mut workers = JoinSet::new();
     let worker_count = if resumable { cfg.segments.max(1) } else { 1 };
-    for _ in 0..worker_count {
+    lock(&state).workers = worker_count;
+    for index in 0..worker_count {
         workers.spawn(worker(
+            index,
             inner.clone(),
             rec.url.clone(),
             headers.clone(),
@@ -324,6 +356,7 @@ async fn probe_with_retry(
     headers: &HeaderMap,
     token: &CancellationToken,
 ) -> Result<Option<crate::ProbeInfo>> {
+    let cfg = inner.config();
     let mut attempt = 0;
     loop {
         let result = tokio::select! {
@@ -332,9 +365,9 @@ async fn probe_with_retry(
         };
         match result {
             Ok(info) => return Ok(Some(info)),
-            Err(e) if e.is_retryable() && attempt < inner.config.max_retries => {
+            Err(e) if e.is_retryable() && attempt < retry_budget(&cfg, &e) => {
                 attempt += 1;
-                if !backoff(&inner.config, attempt, token).await {
+                if !backoff(&cfg, attempt, &e, token).await {
                     return Ok(None);
                 }
             }
@@ -343,20 +376,43 @@ async fn probe_with_retry(
     }
 }
 
-/// Sleeps before retry `attempt`. Returns `false` if cancelled meanwhile.
-async fn backoff(cfg: &EngineConfig, attempt: u32, token: &CancellationToken) -> bool {
+/// How many retries an error gets. Rate limits are temporary and can last a
+/// while, so they get more patience than other errors.
+fn retry_budget(cfg: &EngineConfig, err: &Error) -> u32 {
+    match err {
+        Error::Busy { .. } => cfg.max_retries * 2,
+        _ => cfg.max_retries,
+    }
+}
+
+/// Sleeps before retry `attempt`, honouring `Retry-After`. Returns `false` if
+/// cancelled meanwhile.
+async fn backoff(cfg: &EngineConfig, attempt: u32, err: &Error, token: &CancellationToken) -> bool {
     let factor = 1u32 << (attempt.saturating_sub(1)).min(6);
-    let delay = cfg
+    let mut delay = cfg
         .retry_base_delay
         .saturating_mul(factor)
         .min(Duration::from_secs(30));
+    if let Error::Busy { retry_after, .. } = err {
+        let wait = retry_after.unwrap_or(cfg.busy_retry_delay * attempt.min(10));
+        delay = wait.max(cfg.retry_base_delay).min(Duration::from_secs(60));
+    }
     tokio::select! {
         _ = token.cancelled() => false,
         _ = tokio::time::sleep(delay) => true,
     }
 }
 
+enum Exit {
+    /// No more work, or cancelled.
+    Done,
+    /// Gave its segment back because the server refused another connection.
+    Retired,
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn worker(
+    index: usize,
     inner: Arc<Inner>,
     url: String,
     headers: HeaderMap,
@@ -365,46 +421,93 @@ async fn worker(
     resumable: bool,
     token: CancellationToken,
 ) -> Result<()> {
-    let cfg = &inner.config;
+    let stagger = inner.config().connection_stagger * index as u32;
+    let result = tokio::select! {
+        _ = token.cancelled() => Ok(Exit::Done),
+        _ = tokio::time::sleep(stagger) => {
+            worker_loop(&inner, &url, &headers, &part, &state, resumable, &token).await
+        }
+    };
+    // A retired worker already left the count while holding the lock.
+    if !matches!(result, Ok(Exit::Retired)) {
+        lock(&state).workers -= 1;
+    }
+    result.map(|_| ())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn worker_loop(
+    inner: &Inner,
+    url: &str,
+    headers: &HeaderMap,
+    part: &Path,
+    state: &Shared,
+    resumable: bool,
+    token: &CancellationToken,
+) -> Result<Exit> {
+    let cfg = &inner.config();
     loop {
-        let Some(idx) = lock(&state).claim(resumable, cfg.min_split_size) else {
-            return Ok(());
+        let Some(mut idx) = lock(state).claim(resumable, cfg.min_split_size) else {
+            return Ok(Exit::Done);
         };
         let mut attempt = 0;
         loop {
             if token.is_cancelled() {
-                return Ok(());
+                return Ok(Exit::Done);
             }
-            let before = lock(&state).segs[idx].pos;
-            match fetch_segment(
-                &inner, &url, &headers, &part, &state, idx, resumable, &token,
-            )
-            .await
+            let before = lock(state).segs[idx].pos;
+            match fetch_segment(inner, url, headers, part, state, &mut idx, resumable, token).await
             {
                 Ok(()) => break,
-                Err(e) if e.is_retryable() && attempt < cfg.max_retries => {
-                    if lock(&state).segs[idx].pos > before {
+                Err(e @ Error::Busy { .. }) => {
+                    {
+                        let mut s = lock(state);
+                        s.throttled = true;
+                        if s.workers > 1 {
+                            // Hand the segment to the connections the server accepted.
+                            s.workers -= 1;
+                            s.in_use[idx] = false;
+                            tracing::debug!(
+                                segment = idx,
+                                workers = s.workers,
+                                "server busy; dropping a connection"
+                            );
+                            return Ok(Exit::Retired);
+                        }
+                    }
+                    if attempt >= retry_budget(cfg, &e) {
+                        return Err(e);
+                    }
+                    attempt += 1;
+                    if !backoff(cfg, attempt, &e, token).await {
+                        return Ok(Exit::Done);
+                    }
+                }
+                Err(e) if e.is_retryable() && attempt < retry_budget(cfg, &e) => {
+                    if lock(state).segs[idx].pos > before {
                         attempt = 0;
                     }
                     attempt += 1;
                     tracing::debug!(segment = idx, attempt, error = %e, "retrying segment");
-                    if !backoff(cfg, attempt, &token).await {
-                        return Ok(());
+                    if !backoff(cfg, attempt, &e, token).await {
+                        return Ok(Exit::Done);
                     }
                 }
                 Err(e) => return Err(e),
             }
         }
         if token.is_cancelled() {
-            return Ok(());
+            return Ok(Exit::Done);
         }
-        let mut s = lock(&state);
+        let mut s = lock(state);
         s.complete[idx] = true;
         s.in_use[idx] = false;
     }
 }
 
-/// Downloads the rest of one segment. Returns `Ok` when it is finished or cancelled.
+/// Downloads the rest of segment `*idx`, continuing into following idle
+/// segments on the same connection (`*idx` is updated). Returns `Ok` when the
+/// last one is finished or the download is cancelled.
 #[allow(clippy::too_many_arguments)]
 async fn fetch_segment(
     inner: &Inner,
@@ -412,13 +515,13 @@ async fn fetch_segment(
     headers: &HeaderMap,
     part: &Path,
     state: &Shared,
-    idx: usize,
+    idx: &mut usize,
     resumable: bool,
     token: &CancellationToken,
 ) -> Result<()> {
     let (mut pos, end) = {
         let mut s = lock(state);
-        let seg = &mut s.segs[idx];
+        let seg = &mut s.segs[*idx];
         if !resumable {
             // Without range support a retry has to start over.
             seg.pos = seg.start;
@@ -431,14 +534,25 @@ async fn fetch_segment(
 
     let mut request = inner.client.get(url).headers(headers.clone());
     if resumable {
-        let end = end.expect("resumable segments have an end");
-        request = request.header(RANGE, format!("bytes={pos}-{end}"));
+        // When the server limits requests (or only one connection is left),
+        // ask for everything from `pos` so this connection can carry on into
+        // the next segment. Otherwise ask for just this segment, so a closed
+        // connection does not waste bandwidth on bytes another worker fetches.
+        let open_ended = {
+            let s = lock(state);
+            s.throttled || s.workers <= 1
+        };
+        let range = match end {
+            Some(end) if !open_ended => format!("bytes={pos}-{end}"),
+            _ => format!("bytes={pos}-"),
+        };
+        request = request.header(RANGE, range);
     }
     let mut resp = tokio::select! {
         _ = token.cancelled() => return Ok(()),
         r = request.send() => r?,
     };
-    check_status(resp.status())?;
+    check_status(resp.status(), resp.headers())?;
     if resumable {
         let start = resp
             .headers()
@@ -451,31 +565,48 @@ async fn fetch_segment(
         }
     }
 
+    let read_timeout = inner.config().read_timeout;
     let mut file = OpenOptions::new().write(true).open(part).await?;
     file.seek(SeekFrom::Start(pos)).await?;
 
     loop {
         let chunk = tokio::select! {
             _ = token.cancelled() => break,
-            c = tokio::time::timeout(inner.config.read_timeout, resp.chunk()) => match c {
+            c = tokio::time::timeout(read_timeout, resp.chunk()) => match c {
                 Err(_) => return Err(Error::Timeout),
                 Ok(r) => r?,
             },
         };
         let Some(chunk) = chunk else { break };
 
-        // Another worker may have taken over the tail of this segment.
-        let end_now = lock(state).segs[idx].end;
-        let take = match end_now {
-            Some(e) if pos > e => break,
-            Some(e) => chunk.len().min((e + 1 - pos) as usize),
-            None => chunk.len(),
-        };
-        file.write_all(&chunk[..take]).await?;
+        let mut offset = 0;
+        let mut finished = false;
+        while offset < chunk.len() {
+            // The segment may have been shortened by a split, or be finished.
+            let end_now = {
+                let mut s = lock(state);
+                match s.segs[*idx].end {
+                    Some(e) if pos > e => {
+                        if !s.chain(idx, pos) {
+                            finished = true;
+                            break;
+                        }
+                        s.segs[*idx].end
+                    }
+                    end => end,
+                }
+            };
+            let take = match end_now {
+                Some(e) => (chunk.len() - offset).min((e + 1 - pos) as usize),
+                None => chunk.len() - offset,
+            };
+            file.write_all(&chunk[offset..offset + take]).await?;
+            offset += take;
+            pos += take as u64;
+            lock(state).segs[*idx].pos = pos;
+        }
         file.flush().await?;
-        pos += take as u64;
-        lock(state).segs[idx].pos = pos;
-        if take < chunk.len() || end_now.is_some_and(|e| pos > e) {
+        if finished {
             break;
         }
     }
@@ -484,7 +615,7 @@ async fn fetch_segment(
     if token.is_cancelled() {
         return Ok(());
     }
-    let seg = lock(state).segs[idx];
+    let seg = lock(state).segs[*idx];
     match seg.end {
         Some(e) if seg.pos <= e => Err(Error::Truncated),
         _ => Ok(()),
@@ -520,6 +651,25 @@ mod tests {
         assert_eq!(plan(Some(1000), false, &cfg(8, 1)).len(), 1);
         assert_eq!(plan(None, false, &cfg(8, 1))[0].end, None);
         assert!(plan(Some(0), true, &cfg(8, 1)).is_empty());
+    }
+
+    #[test]
+    fn chain_takes_over_the_next_idle_segment() {
+        let mut state = State::new(plan(Some(1000), true, &cfg(4, 100)));
+        assert_eq!(state.claim(false, 100), Some(0));
+        assert_eq!(state.claim(false, 100), Some(1));
+        let mut idx = 0;
+        // Segment 1 is busy, so segment 0 cannot continue into it.
+        assert!(!state.chain(&mut idx, 250));
+        state.in_use[1] = false;
+        assert!(state.chain(&mut idx, 250));
+        assert_eq!(idx, 1);
+        assert!(state.complete[0] && state.in_use[1]);
+        // A segment that already has progress is not taken over.
+        state.segs[3].pos = 760;
+        let mut idx = 2;
+        state.in_use[2] = true;
+        assert!(!state.chain(&mut idx, 750));
     }
 
     #[test]

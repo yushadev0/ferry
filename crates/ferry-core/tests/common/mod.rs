@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -50,6 +50,25 @@ pub struct ServerState {
     pub chunk_delay: Mutex<Option<Duration>>,
     pub bytes_served: AtomicU64,
     pub range_requests: AtomicUsize,
+    pub probe_requests: AtomicUsize,
+    /// Refuse downloads beyond this many open at once with HTTP 429.
+    pub max_connections: Mutex<Option<usize>>,
+    pub open_connections: AtomicUsize,
+    pub peak_connections: AtomicUsize,
+    pub refused: AtomicUsize,
+    /// Like nginx `limit_req`: refuse requests (with 429, no Retry-After)
+    /// arriving sooner than this after the last accepted one.
+    pub min_request_interval: Mutex<Option<Duration>>,
+    last_accepted: Mutex<Option<Instant>>,
+}
+
+/// Counts an open download response until its body is dropped.
+struct OpenConnection(Arc<ServerState>);
+
+impl Drop for OpenConnection {
+    fn drop(&mut self) {
+        self.0.open_connections.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 pub struct Server {
@@ -76,6 +95,13 @@ pub async fn spawn(opts: Options) -> Server {
         chunk_delay: Mutex::new(None),
         bytes_served: AtomicU64::new(0),
         range_requests: AtomicUsize::new(0),
+        probe_requests: AtomicUsize::new(0),
+        max_connections: Mutex::new(None),
+        open_connections: AtomicUsize::new(0),
+        peak_connections: AtomicUsize::new(0),
+        refused: AtomicUsize::new(0),
+        min_request_interval: Mutex::new(None),
+        last_accepted: Mutex::new(None),
     });
     let app = Router::new()
         .route("/files/{name}", get(serve))
@@ -117,17 +143,53 @@ async fn serve(State(st): State<Arc<ServerState>>, headers: HeaderMap) -> Respon
             .body(Body::empty())
             .unwrap();
     }
+    if let Some(interval) = *st.min_request_interval.lock().unwrap() {
+        let mut last = st.last_accepted.lock().unwrap();
+        if last.is_some_and(|t| t.elapsed() < interval) {
+            st.refused.fetch_add(1, Ordering::SeqCst);
+            return Response::builder()
+                .status(StatusCode::TOO_MANY_REQUESTS)
+                .body(Body::empty())
+                .unwrap();
+        }
+        *last = Some(Instant::now());
+    }
     let range = headers
         .get(header::RANGE)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
     let is_probe = range.as_deref() == Some("bytes=0-0");
+    if is_probe {
+        st.probe_requests.fetch_add(1, Ordering::SeqCst);
+    }
     if !is_probe && take_one(&st.fail_next) {
         return Response::builder()
             .status(StatusCode::INTERNAL_SERVER_ERROR)
             .body(Body::empty())
             .unwrap();
     }
+
+    let connection = if is_probe {
+        None
+    } else {
+        let open = st.open_connections.fetch_add(1, Ordering::SeqCst) + 1;
+        let guard = OpenConnection(st.clone());
+        if st
+            .max_connections
+            .lock()
+            .unwrap()
+            .is_some_and(|max| open > max)
+        {
+            st.refused.fetch_add(1, Ordering::SeqCst);
+            return Response::builder()
+                .status(StatusCode::TOO_MANY_REQUESTS)
+                .header(header::RETRY_AFTER, "0")
+                .body(Body::empty())
+                .unwrap();
+        }
+        st.peak_connections.fetch_max(open, Ordering::SeqCst);
+        Some(guard)
+    };
 
     let len = st.data.len() as u64;
     let (status, start, end) = match (st.ranges, range.as_deref().and_then(parse_range)) {
@@ -148,6 +210,7 @@ async fn serve(State(st): State<Arc<ServerState>>, headers: HeaderMap) -> Respon
     let body_state = st.clone();
     let stream = futures_util::stream::unfold(start, move |pos| {
         let st = body_state.clone();
+        let _open = &connection;
         async move {
             if pos > end {
                 return None;
