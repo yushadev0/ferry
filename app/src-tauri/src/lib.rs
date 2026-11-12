@@ -3,9 +3,12 @@
 mod commands;
 mod settings;
 
-use std::{path::PathBuf, sync::Mutex};
+use std::{path::PathBuf, sync::Mutex, time::Duration};
+
+use chrono::Timelike;
 
 use ferry_core::{Engine, EngineConfig, Event, Status};
+use serde::Serialize;
 use settings::Settings;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -13,14 +16,28 @@ use tauri::{
     AppHandle, Emitter, Manager, WindowEvent,
 };
 use tauri_plugin_notification::NotificationExt;
+use tokio::sync::Notify;
 
 /// Name of the event that carries engine events to the UI.
 const ENGINE_EVENT: &str = "ferry://event";
+/// Name of the event that carries [`QueueState`] changes to the UI.
+const QUEUE_EVENT: &str = "ferry://queue";
+
+/// Whether the queue runs, as shown in the status bar.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueState {
+    pub running: bool,
+    /// When the schedule lets the queue run again ("HH:MM"), if it is held.
+    pub resumes_at: Option<String>,
+}
 
 pub struct AppState {
     pub engine: Engine,
     settings: Mutex<Settings>,
     settings_path: PathBuf,
+    /// Wakes the scheduler when the settings change.
+    schedule_changed: Notify,
 }
 
 impl AppState {
@@ -31,18 +48,30 @@ impl AppState {
             .clone()
     }
 
-    pub fn update_settings(&self, mut new: Settings) -> std::io::Result<Settings> {
-        new.segments = new.segments.clamp(1, 16);
+    pub fn update_settings(&self, new: Settings) -> std::io::Result<Settings> {
+        let new = new.normalized();
         new.save(&self.settings_path)?;
         self.engine.set_config(engine_config(&new));
         *self.settings.lock().unwrap_or_else(|e| e.into_inner()) = new.clone();
+        self.schedule_changed.notify_one();
         Ok(new)
+    }
+
+    pub fn queue_state(&self) -> QueueState {
+        let settings = self.settings();
+        let running = self.engine.queue_running();
+        QueueState {
+            running,
+            resumes_at: (!running && settings.schedule_enabled).then_some(settings.schedule_start),
+        }
     }
 }
 
 fn engine_config(settings: &Settings) -> EngineConfig {
     EngineConfig {
         segments: settings.segments,
+        max_active: settings.max_active,
+        speed_limit: settings.speed_limit_kib * 1024,
         ..EngineConfig::default()
     }
 }
@@ -78,7 +107,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             "show" => show_main_window(app),
             "pause_all" => {
                 let engine = app.state::<AppState>().engine.clone();
-                tauri::async_runtime::spawn(async move { engine.shutdown().await });
+                tauri::async_runtime::spawn(async move { engine.pause_all().await });
             }
             "quit" => quit(app),
             _ => {}
@@ -98,6 +127,28 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     }
     tray.build(app)?;
     Ok(())
+}
+
+/// Runs the queue only inside the schedule window, checking every 15 seconds
+/// and whenever the settings change.
+fn run_scheduler(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let state = app.state::<AppState>();
+            let now = chrono::Local::now();
+            let wanted = state.settings().in_schedule(now.hour() * 60 + now.minute());
+            if wanted != state.engine.queue_running() {
+                tracing::info!(running = wanted, "schedule changed the queue");
+            }
+            // Also starts queued downloads after launch.
+            state.engine.set_queue_running(wanted).await;
+            let _ = app.emit(QUEUE_EVENT, state.queue_state());
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(15)) => {}
+                _ = state.schedule_changed.notified() => {}
+            }
+        }
+    });
 }
 
 /// Forwards engine events to the UI and shows notifications.
@@ -162,7 +213,9 @@ pub fn run() {
                 engine,
                 settings: Mutex::new(settings),
                 settings_path,
+                schedule_changed: Notify::new(),
             });
+            run_scheduler(app.handle().clone());
             build_tray(app)?;
             Ok(())
         })
@@ -184,6 +237,8 @@ pub fn run() {
             commands::inspect_url,
             commands::add_download,
             commands::start_downloads,
+            commands::start_now,
+            commands::queue_state,
             commands::pause_downloads,
             commands::remove_downloads,
             commands::open_file,

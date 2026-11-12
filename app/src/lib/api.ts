@@ -31,6 +31,20 @@ export interface Settings {
   segments: number;
   notifyOnComplete: boolean;
   closeToTray: boolean;
+  maxActive: number;
+  /** KiB/s; 0 = unlimited. */
+  speedLimitKib: number;
+  scheduleEnabled: boolean;
+  /** "HH:MM" */
+  scheduleStart: string;
+  /** "HH:MM" */
+  scheduleStop: string;
+}
+
+export interface QueueState {
+  running: boolean;
+  /** "HH:MM" when the schedule holds the queue. */
+  resumesAt: string | null;
 }
 
 export type EngineEvent =
@@ -51,6 +65,8 @@ export const getDownload = (id: number) => invoke<Download>("get_download", { id
 export const inspectUrl = (url: string) => invoke<ProbeInfo>("inspect_url", { url });
 export const addDownload = (req: AddRequest) => invoke<number>("add_download", { req });
 export const startDownloads = (ids: number[]) => invoke<void>("start_downloads", { ids });
+export const startNow = (ids: number[]) => invoke<void>("start_now", { ids });
+export const queueState = () => invoke<QueueState>("queue_state");
 export const pauseDownloads = (ids: number[]) => invoke<void>("pause_downloads", { ids });
 export const removeDownloads = (ids: number[], deleteFiles: boolean) =>
   invoke<void>("remove_downloads", { ids, deleteFiles });
@@ -61,6 +77,10 @@ export const saveSettings = (settings: Settings) => invoke<Settings>("save_setti
 
 export function onEngineEvent(handler: (event: EngineEvent) => void): Promise<UnlistenFn> {
   return listen<EngineEvent>("ferry://event", (e) => handler(e.payload));
+}
+
+export function onQueueState(handler: (state: QueueState) => void): Promise<UnlistenFn> {
+  return listen<QueueState>("ferry://queue", (e) => handler(e.payload));
 }
 
 /** Turns an invoke rejection into a readable message. */

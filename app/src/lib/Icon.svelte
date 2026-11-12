@@ -13,6 +13,8 @@
     check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
     alert: '<circle cx="12" cy="12" r="8.5"/><path d="M12 8v4.5M12 16h.01"/>',
     x: '<path d="M6 6l12 12M18 6L6 18"/>',
+    zap: '<path d="M13 3 5 13.5h6l-1 7.5 8-10.5h-6z"/>',
+    clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
   } as const;
   export type IconName = keyof typeof PATHS;
 </script>

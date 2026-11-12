@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, RwLock,
     },
     time::{Duration, Instant},
@@ -15,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     download, filename,
+    limiter::RateLimiter,
     probe::{probe, ProbeInfo},
     store::{DownloadId, DownloadInfo, NewDownload, Status, Store},
     Error, Result,
@@ -49,6 +50,12 @@ pub struct EngineConfig {
     /// First wait after the server answers 429/503 without `Retry-After`;
     /// grows linearly with each attempt (capped at 10x).
     pub busy_retry_delay: Duration,
+    /// Downloads that may run at once when started through the queue
+    /// ([`Engine::start`]); 0 means no limit.
+    pub max_active: usize,
+    /// Total download speed across all downloads, in bytes per second; 0 means
+    /// no limit.
+    pub speed_limit: u64,
     pub user_agent: String,
 }
 
@@ -64,6 +71,8 @@ impl Default for EngineConfig {
             save_interval: Duration::from_secs(1),
             connection_stagger: Duration::from_millis(150),
             busy_retry_delay: Duration::from_secs(1),
+            max_active: 0,
+            speed_limit: 0,
             user_agent: format!("Ferry/{}", crate::VERSION),
         }
     }
@@ -119,6 +128,10 @@ struct Active {
     generation: u64,
     token: CancellationToken,
     handle: JoinHandle<()>,
+    /// Started with [`Engine::start_now`]: ignores the queue limit and window.
+    forced: bool,
+    /// Set when the queue takes the download back; it ends `queued`, not `paused`.
+    requeue: Arc<AtomicBool>,
 }
 
 pub(crate) struct Inner {
@@ -132,6 +145,9 @@ pub(crate) struct Inner {
     recent_probes: Mutex<HashMap<DownloadId, (Instant, ProbeInfo)>>,
     /// Results of [`Engine::probe`] by URL and headers, reused by `add`.
     url_probes: Mutex<HashMap<ProbeKey, (Instant, ProbeInfo)>>,
+    /// Whether queued downloads may start (false outside a schedule window).
+    queue_running: AtomicBool,
+    pub limiter: RateLimiter,
 }
 
 impl Inner {
@@ -161,11 +177,86 @@ impl Inner {
         (at.elapsed() < PROBE_REUSE).then_some(info)
     }
 
-    /// Called by a finished download task to unregister itself.
-    pub fn task_finished(&self, id: DownloadId, generation: u64) {
+    /// Called by a finished download task to unregister itself; frees its
+    /// queue slot for the next download.
+    pub fn task_finished(self: &Arc<Self>, id: DownloadId, generation: u64) {
+        {
+            let mut active = self.active();
+            if active.get(&id).is_some_and(|a| a.generation == generation) {
+                active.remove(&id);
+            }
+        }
+        self.pump();
+    }
+
+    /// Spawns the download task. The caller holds the `active` lock.
+    fn spawn(
+        self: &Arc<Self>,
+        runtime: &tokio::runtime::Handle,
+        active: &mut HashMap<DownloadId, Active>,
+        id: DownloadId,
+        forced: bool,
+    ) -> Result<()> {
+        self.store.set_status(id, Status::Downloading, None)?;
+        self.emit(Event::Status {
+            id,
+            status: Status::Downloading,
+            error: None,
+        });
+        let generation = self.generation.fetch_add(1, Ordering::Relaxed);
+        let token = CancellationToken::new();
+        let requeue = Arc::new(AtomicBool::new(false));
+        let handle = runtime.spawn(download::run(
+            self.clone(),
+            id,
+            generation,
+            token.clone(),
+            requeue.clone(),
+        ));
+        active.insert(
+            id,
+            Active {
+                generation,
+                token,
+                handle,
+                forced,
+                requeue,
+            },
+        );
+        Ok(())
+    }
+
+    /// Starts queued downloads while there are free slots.
+    pub fn pump(self: &Arc<Self>) {
+        if !self.queue_running.load(Ordering::SeqCst) {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let max = match self.config().max_active {
+            0 => usize::MAX,
+            n => n,
+        };
         let mut active = self.active();
-        if active.get(&id).is_some_and(|a| a.generation == generation) {
-            active.remove(&id);
+        let queued = match self.store.queued_ids() {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::error!(error = %e, "could not read the queue");
+                return;
+            }
+        };
+        for id in queued {
+            let running = active.values().filter(|a| !a.forced).count();
+            if running >= max {
+                break;
+            }
+            if active.contains_key(&id) {
+                continue;
+            }
+            if let Err(e) = self.spawn(&runtime, &mut active, id, false) {
+                tracing::error!(id, error = %e, "could not start a queued download");
+            }
         }
     }
 }
@@ -198,12 +289,14 @@ impl Engine {
             inner: Arc::new(Inner {
                 client,
                 store,
-                config: RwLock::new(config),
                 events,
                 active: Mutex::new(HashMap::new()),
                 generation: AtomicU64::new(0),
                 recent_probes: Mutex::new(HashMap::new()),
                 url_probes: Mutex::new(HashMap::new()),
+                queue_running: AtomicBool::new(true),
+                limiter: RateLimiter::new(config.speed_limit),
+                config: RwLock::new(config),
             }),
         })
     }
@@ -213,10 +306,48 @@ impl Engine {
         self.inner.config()
     }
 
-    /// Replaces the configuration. Running downloads keep their settings until
-    /// restarted; the user agent only changes when the engine is reopened.
+    /// Replaces the configuration. The speed limit and queue size apply at
+    /// once; per-download settings apply to downloads started afterwards, and
+    /// the user agent only changes when the engine is reopened.
     pub fn set_config(&self, config: EngineConfig) {
+        self.inner.limiter.set_rate(config.speed_limit);
         *self.inner.config.write().unwrap_or_else(|e| e.into_inner()) = config;
+        self.inner.pump();
+    }
+
+    /// Lets queued downloads start (true) or holds the queue (false). Holding
+    /// it sends running queue downloads back to the queue, keeping their
+    /// progress; downloads started with [`Engine::start_now`] keep running.
+    pub async fn set_queue_running(&self, running: bool) {
+        let was = self.inner.queue_running.swap(running, Ordering::SeqCst);
+        if running {
+            self.inner.pump();
+            return;
+        }
+        if !was {
+            return;
+        }
+        let stopped: Vec<Active> = {
+            let mut active = self.inner.active();
+            let ids: Vec<DownloadId> = active
+                .iter()
+                .filter(|(_, a)| !a.forced)
+                .map(|(id, _)| *id)
+                .collect();
+            ids.iter().filter_map(|id| active.remove(id)).collect()
+        };
+        for a in &stopped {
+            a.requeue.store(true, Ordering::SeqCst);
+            a.token.cancel();
+        }
+        for a in stopped {
+            let _ = a.handle.await;
+        }
+    }
+
+    /// Whether queued downloads may currently start.
+    pub fn queue_running(&self) -> bool {
+        self.inner.queue_running.load(Ordering::SeqCst)
     }
 
     /// Asks the server about a URL without adding it (for an "add download"
@@ -241,7 +372,8 @@ impl Engine {
         self.inner.events.subscribe()
     }
 
-    /// Probes the URL and stores a new `queued` download. Call [`Engine::start`] to begin.
+    /// Probes the URL and stores a new, `paused` download. Call
+    /// [`Engine::start`] to queue it or [`Engine::start_now`] to begin at once.
     pub async fn add(&self, req: Request) -> Result<DownloadId> {
         let headers = build_headers(&req.headers);
         let cached = self
@@ -304,45 +436,45 @@ impl Engine {
         }
     }
 
-    /// Starts or resumes a download in the background.
+    /// Queues a download; it starts as soon as the queue has a free slot
+    /// (immediately when there is no limit and the queue is running).
     ///
     /// Must be called from within a Tokio runtime.
     pub fn start(&self, id: DownloadId) -> Result<()> {
-        let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
-            Error::InvalidState("Engine::start must be called inside a Tokio runtime")
-        })?;
+        runtime()?;
+        let info = self.inner.store.get(id)?;
+        if info.status == Status::Completed {
+            return Err(Error::InvalidState("download is already completed"));
+        }
+        if self.inner.active().contains_key(&id) || info.status == Status::Queued {
+            self.inner.pump();
+            return Ok(());
+        }
+        self.inner.store.enqueue(id)?;
+        self.inner.emit(Event::Status {
+            id,
+            status: Status::Queued,
+            error: None,
+        });
+        self.inner.pump();
+        Ok(())
+    }
+
+    /// Starts a download right away, ignoring the queue limit and schedule.
+    ///
+    /// Must be called from within a Tokio runtime.
+    pub fn start_now(&self, id: DownloadId) -> Result<()> {
+        let runtime = runtime()?;
         let info = self.inner.store.get(id)?;
         if info.status == Status::Completed {
             return Err(Error::InvalidState("download is already completed"));
         }
         let mut active = self.inner.active();
-        if active.contains_key(&id) {
+        if let Some(a) = active.get_mut(&id) {
+            a.forced = true;
             return Ok(());
         }
-        self.inner.store.set_status(id, Status::Downloading, None)?;
-        self.inner.emit(Event::Status {
-            id,
-            status: Status::Downloading,
-            error: None,
-        });
-
-        let generation = self.inner.generation.fetch_add(1, Ordering::Relaxed);
-        let token = CancellationToken::new();
-        let handle = runtime.spawn(download::run(
-            self.inner.clone(),
-            id,
-            generation,
-            token.clone(),
-        ));
-        active.insert(
-            id,
-            Active {
-                generation,
-                token,
-                handle,
-            },
-        );
-        Ok(())
+        self.inner.spawn(&runtime, &mut active, id, true)
     }
 
     /// Pauses a download and waits until its progress is saved.
@@ -392,12 +524,35 @@ impl Engine {
         self.inner.active().keys().copied().collect()
     }
 
-    /// Pauses every running download, saving progress. Call before exiting.
+    /// Pauses every running download. Queue downloads go back to the queue
+    /// with their progress saved, so they continue on the next start.
+    pub async fn pause_all(&self) {
+        let queue_was_running = self.queue_running();
+        self.set_queue_running(false).await;
+        for id in self.active_ids() {
+            let _ = self.pause(id).await;
+        }
+        for id in self.inner.store.queued_ids().unwrap_or_default() {
+            let _ = self.pause(id).await;
+        }
+        if queue_was_running {
+            self.inner.queue_running.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Saves progress of every running download. Call before exiting; queue
+    /// downloads stay queued and continue when the engine starts again.
     pub async fn shutdown(&self) {
+        self.set_queue_running(false).await;
         for id in self.active_ids() {
             let _ = self.pause(id).await;
         }
     }
+}
+
+fn runtime() -> Result<tokio::runtime::Handle> {
+    tokio::runtime::Handle::try_current()
+        .map_err(|_| Error::InvalidState("the engine must be used inside a Tokio runtime"))
 }
 
 /// Converts user-supplied header pairs, dropping invalid ones and `Range`.

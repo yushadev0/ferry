@@ -17,7 +17,7 @@
   ];
 
   const STATUS_LABEL: Record<api.Status, string> = {
-    queued: "Queued",
+    queued: "Waiting",
     downloading: "Downloading",
     paused: "Paused",
     completed: "Finished",
@@ -26,6 +26,7 @@
 
   let downloads = $state<api.Download[]>([]);
   let settings = $state<api.Settings | null>(null);
+  let queue = $state<api.QueueState>({ running: true, resumesAt: null });
   let filter = $state<Filter>("all");
   const selected = new SvelteSet<number>();
   let lastClicked: number | null = null;
@@ -48,7 +49,13 @@
     Object.fromEntries(FILTERS.map((f) => [f.id, downloads.filter((d) => matches(d, f.id)).length])),
   );
   const selection = $derived(downloads.filter((d) => selected.has(d.id)));
-  const canStart = $derived(selection.some((d) => d.status !== "completed" && d.status !== "downloading"));
+  const canStart = $derived(
+    selection.some((d) => d.status === "paused" || d.status === "failed"),
+  );
+  const canStartNow = $derived(
+    selection.some((d) => d.status !== "completed" && d.status !== "downloading"),
+  );
+  const waiting = $derived(downloads.filter((d) => d.status === "queued").length);
   const canPause = $derived(selection.some((d) => d.status === "downloading" || d.status === "queued"));
   const running = $derived(downloads.filter((d) => d.status === "downloading"));
   const totalSpeed = $derived(running.reduce((sum, d) => sum + (d.speed ?? 0), 0));
@@ -100,14 +107,24 @@
   onMount(() => {
     let unlisten: (() => void) | undefined;
     let disposed = false;
+    let unlistenQueue: (() => void) | undefined;
     (async () => {
       unlisten = await api.onEngineEvent(handleEvent);
-      if (disposed) unlisten();
-      [downloads, settings] = await Promise.all([api.listDownloads(), api.getSettings()]);
+      unlistenQueue = await api.onQueueState((s) => (queue = s));
+      if (disposed) {
+        unlisten();
+        unlistenQueue();
+      }
+      [downloads, settings, queue] = await Promise.all([
+        api.listDownloads(),
+        api.getSettings(),
+        api.queueState(),
+      ]);
     })().catch((e) => (banner = api.message(e)));
     return () => {
       disposed = true;
       unlisten?.();
+      unlistenQueue?.();
     };
   });
 
@@ -133,7 +150,7 @@
 
   function activate(d: api.Download) {
     if (d.status === "completed") run(() => api.openFile(d.id));
-    else if (d.status !== "downloading") run(() => api.startDownloads([d.id]));
+    else if (d.status !== "downloading") run(() => api.startNow([d.id]));
   }
 
   function openAdd(url = "") {
@@ -183,8 +200,19 @@
       <Icon name="plus" size={16} /> Add URL
     </button>
     <div class="sep"></div>
-    <button class="tool" disabled={!canStart} onclick={() => run(() => api.startDownloads([...selected]))}>
+    <button
+      class="tool"
+      disabled={!canStart}
+      title="Add to the queue; starts when there is a free slot"
+      onclick={() => run(() => api.startDownloads([...selected]))}>
       <Icon name="play" /> Resume
+    </button>
+    <button
+      class="tool"
+      disabled={!canStartNow}
+      title="Start right away, ignoring the queue limit and schedule (double-click)"
+      onclick={() => run(() => api.startNow([...selected]))}>
+      <Icon name="zap" /> Start now
     </button>
     <button class="tool" disabled={!canPause} onclick={() => run(() => api.pauseDownloads([...selected]))}>
       <Icon name="pause" /> Pause
@@ -289,7 +317,17 @@
   <footer class="statusbar">
     <span>{downloads.length} downloads</span>
     <span>{running.length} active</span>
+    {#if waiting}<span>{waiting} waiting</span>{/if}
     {#if totalSpeed}<span class="speed">↓ {formatSpeed(totalSpeed)}</span>{/if}
+    {#if settings?.speedLimitKib}
+      <span title="Total speed limit (Settings)">limit {formatSpeed(settings.speedLimitKib * 1024)}</span>
+    {/if}
+    {#if !queue.running}
+      <span class="held" title="The queue only runs inside the scheduled hours (Settings)">
+        <Icon name="clock" size={13} />
+        Queue on hold{queue.resumesAt ? ` until ${queue.resumesAt}` : ""}
+      </span>
+    {/if}
     {#if selection.length === 1 && selection[0].error}
       <span class="err" title={selection[0].error}>{selection[0].error}</span>
     {/if}
@@ -620,6 +658,12 @@
   .statusbar .speed {
     color: var(--accent);
     font-weight: 600;
+  }
+  .statusbar .held {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--warn);
   }
   .statusbar .err {
     color: var(--danger);

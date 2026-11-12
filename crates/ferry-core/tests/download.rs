@@ -33,6 +33,17 @@ async fn next_event(rx: &mut Receiver<Event>) -> Event {
     }
 }
 
+/// Waits for a status event of `id` matching `want`.
+async fn wait_status(rx: &mut Receiver<Event>, id: DownloadId, want: Status) {
+    loop {
+        if let Event::Status { id: i, status, .. } = next_event(rx).await {
+            if i == id && status == want {
+                return;
+            }
+        }
+    }
+}
+
 /// Waits for the download to complete, fail or pause.
 async fn wait_settled(rx: &mut Receiver<Event>, id: DownloadId) -> (Status, Option<String>) {
     loop {
@@ -42,7 +53,7 @@ async fn wait_settled(rx: &mut Receiver<Event>, id: DownloadId) -> (Status, Opti
             error,
         } = next_event(rx).await
         {
-            if i == id && status != Status::Downloading {
+            if i == id && !matches!(status, Status::Downloading | Status::Queued) {
                 return (status, error);
             }
         }
@@ -389,4 +400,177 @@ async fn inspect_add_and_start_need_one_probe() {
     engine.start(id).unwrap();
     assert_eq!(wait_settled(&mut rx, id).await, (Status::Completed, None));
     assert_eq!(server.state.probe_requests.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queue_runs_one_download_at_a_time() {
+    let server = common::spawn(common::Options {
+        size: 400 * 1024,
+        ..common::Options::default()
+    })
+    .await;
+    *server.state.chunk_delay.lock().unwrap() = Some(Duration::from_millis(5));
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::in_memory(EngineConfig {
+        max_active: 1,
+        ..config()
+    })
+    .unwrap();
+    let mut rx = engine.subscribe();
+
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        ids.push(
+            engine
+                .add(Request::new(&server.url, dir.path()))
+                .await
+                .unwrap(),
+        );
+    }
+    for &id in &ids {
+        engine.start(id).unwrap();
+    }
+
+    let mut running = std::collections::HashSet::new();
+    let mut finished = Vec::new();
+    while finished.len() < ids.len() {
+        if let Event::Status { id, status, .. } = next_event(&mut rx).await {
+            match status {
+                Status::Downloading => {
+                    running.insert(id);
+                    assert_eq!(running.len(), 1, "more than one download ran at once");
+                }
+                Status::Completed => {
+                    running.remove(&id);
+                    finished.push(id);
+                }
+                Status::Failed | Status::Paused => panic!("unexpected {status:?}"),
+                Status::Queued => {}
+            }
+        }
+    }
+    // First in, first out.
+    assert_eq!(finished, ids);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn holding_the_queue_requeues_without_losing_progress() {
+    let server = common::spawn(common::Options::default()).await;
+    *server.state.chunk_delay.lock().unwrap() = Some(Duration::from_millis(10));
+    let dir = tempfile::tempdir().unwrap();
+    let len = server.state.data.len() as u64;
+    let engine = Engine::in_memory(config()).unwrap();
+    let mut rx = engine.subscribe();
+
+    let id = engine
+        .add(Request::new(&server.url, dir.path()))
+        .await
+        .unwrap();
+    engine.start(id).unwrap();
+    wait_progress(&mut rx, id, len / 2).await;
+
+    engine.set_queue_running(false).await;
+    let held = engine.get(id).unwrap();
+    assert_eq!(held.status, Status::Queued);
+    assert!(held.downloaded >= len / 2);
+
+    // Starting it again while the queue is held only queues it.
+    engine.start(id).unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(engine.get(id).unwrap().status, Status::Queued);
+
+    *server.state.chunk_delay.lock().unwrap() = None;
+    let served_before = server.state.bytes_served.load(Ordering::SeqCst);
+    let mut rx = engine.subscribe();
+    engine.set_queue_running(true).await;
+    assert_eq!(wait_settled(&mut rx, id).await, (Status::Completed, None));
+    let served_after = server.state.bytes_served.load(Ordering::SeqCst) - served_before;
+    assert!(served_after < len, "it restarted instead of continuing");
+    assert_eq!(
+        std::fs::read(dir.path().join("test.bin")).unwrap(),
+        server.state.data
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn start_now_ignores_a_held_queue() {
+    let server = common::spawn(common::Options::default()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::in_memory(config()).unwrap();
+    let mut rx = engine.subscribe();
+    engine.set_queue_running(false).await;
+
+    let id = engine
+        .add(Request::new(&server.url, dir.path()))
+        .await
+        .unwrap();
+    engine.start_now(id).unwrap();
+    wait_status(&mut rx, id, Status::Downloading).await;
+    assert_eq!(wait_settled(&mut rx, id).await, (Status::Completed, None));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn speed_limit_caps_throughput() {
+    let server = common::spawn(common::Options {
+        size: 1024 * 1024,
+        ..common::Options::default()
+    })
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::in_memory(EngineConfig {
+        speed_limit: 512 * 1024,
+        ..config()
+    })
+    .unwrap();
+    let mut rx = engine.subscribe();
+
+    let id = engine
+        .add(Request::new(&server.url, dir.path()))
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    engine.start(id).unwrap();
+    assert_eq!(wait_settled(&mut rx, id).await, (Status::Completed, None));
+    let elapsed = started.elapsed();
+    // 1 MiB at 512 KiB/s takes about two seconds.
+    assert!(
+        elapsed >= Duration::from_millis(1600),
+        "finished in {elapsed:?}"
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("test.bin")).unwrap(),
+        server.state.data
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pause_all_and_queued_downloads() {
+    let server = common::spawn(common::Options::default()).await;
+    *server.state.chunk_delay.lock().unwrap() = Some(Duration::from_millis(10));
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::in_memory(EngineConfig {
+        max_active: 1,
+        ..config()
+    })
+    .unwrap();
+    let mut rx = engine.subscribe();
+    let a = engine
+        .add(Request::new(&server.url, dir.path()))
+        .await
+        .unwrap();
+    let b = engine
+        .add(Request::new(&server.url, dir.path()))
+        .await
+        .unwrap();
+    assert_eq!(engine.get(a).unwrap().status, Status::Paused);
+    engine.start(a).unwrap();
+    engine.start(b).unwrap();
+    wait_status(&mut rx, a, Status::Downloading).await;
+    assert_eq!(engine.get(b).unwrap().status, Status::Queued);
+
+    engine.pause_all().await;
+    assert_eq!(engine.get(a).unwrap().status, Status::Paused);
+    assert_eq!(engine.get(b).unwrap().status, Status::Paused);
+    assert!(engine.active_ids().is_empty());
+    assert!(engine.queue_running());
 }

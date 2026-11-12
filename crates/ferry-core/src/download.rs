@@ -8,7 +8,10 @@
 use std::{
     io::SeekFrom,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, MutexGuard,
+    },
     time::{Duration, Instant},
 };
 
@@ -182,9 +185,11 @@ pub(crate) async fn run(
     id: DownloadId,
     generation: u64,
     token: CancellationToken,
+    requeue: Arc<AtomicBool>,
 ) {
     let (status, error) = match execute(&inner, id, &token).await {
         Ok(true) => (Status::Completed, None),
+        Ok(false) if requeue.load(Ordering::SeqCst) => (Status::Queued, None),
         Ok(false) => (Status::Paused, None),
         Err(e) => {
             tracing::warn!(id, error = %e, "download failed");
@@ -578,6 +583,10 @@ async fn fetch_segment(
             },
         };
         let Some(chunk) = chunk else { break };
+        tokio::select! {
+            _ = token.cancelled() => break,
+            _ = inner.limiter.acquire(chunk.len()) => {}
+        }
 
         let mut offset = 0;
         let mut finished = false;

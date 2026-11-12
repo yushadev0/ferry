@@ -17,6 +17,7 @@ mod download;
 mod engine;
 mod error;
 pub mod filename;
+mod limiter;
 mod probe;
 mod store;
 

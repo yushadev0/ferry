@@ -123,6 +123,7 @@ impl Store {
         conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -151,7 +152,7 @@ impl Store {
                 d.etag,
                 d.last_modified,
                 headers,
-                Status::Queued.as_str(),
+                Status::Paused.as_str(),
                 now
             ],
         )?;
@@ -275,6 +276,26 @@ impl Store {
         Ok(())
     }
 
+    /// Puts a download at the back of the queue.
+    pub fn enqueue(&self, id: DownloadId) -> Result<()> {
+        self.conn().execute(
+            "UPDATE downloads SET status = 'queued', error = NULL, \
+             queue_pos = (SELECT COALESCE(MAX(queue_pos), 0) + 1 FROM downloads) \
+             WHERE id = ?1",
+            [id],
+        )?;
+        Ok(())
+    }
+
+    /// Queued downloads, first in line first.
+    pub fn queued_ids(&self) -> Result<Vec<DownloadId>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare("SELECT id FROM downloads WHERE status = 'queued' ORDER BY queue_pos, id")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Downloads left in `downloading` by a crash become `paused`.
     pub fn reset_interrupted(&self) -> Result<()> {
         self.conn().execute(
@@ -302,4 +323,48 @@ fn row_to_info(r: &Row<'_>) -> rusqlite::Result<DownloadInfo> {
         last_modified: r.get(11)?,
         headers: serde_json::from_str(&headers).unwrap_or_default(),
     })
+}
+
+/// Schema changes after the first release, keyed by `PRAGMA user_version`.
+fn migrate(conn: &Connection) -> Result<()> {
+    let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if version < 1 {
+        let has_queue_pos = conn
+            .prepare("SELECT 1 FROM pragma_table_info('downloads') WHERE name = 'queue_pos'")?
+            .exists([])?;
+        if !has_queue_pos {
+            conn.execute_batch("ALTER TABLE downloads ADD COLUMN queue_pos INTEGER")?;
+        }
+        conn.pragma_update(None, "user_version", 1)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrates_databases_from_before_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        {
+            // The first release's schema had no queue position.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute(
+                "INSERT INTO downloads (url, dir, file_name, resumable, headers, status, created_at) \
+                 VALUES ('http://x/a', '.', 'a', 1, '[]', 'paused', 0)",
+                [],
+            )
+            .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        store.enqueue(1).unwrap();
+        assert_eq!(store.queued_ids().unwrap(), vec![1]);
+        assert_eq!(store.get(1).unwrap().status, Status::Queued);
+        // Opening again is a no-op.
+        drop(store);
+        Store::open(&path).unwrap();
+    }
 }

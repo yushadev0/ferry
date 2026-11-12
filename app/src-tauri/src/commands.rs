@@ -7,7 +7,7 @@ use serde::Deserialize;
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
 
-use crate::{settings::Settings, AppState};
+use crate::{settings::Settings, AppState, QueueState};
 
 type CmdResult<T> = Result<T, String>;
 
@@ -63,6 +63,7 @@ pub async fn add_download(state: State<'_, AppState>, req: AddDownload) -> CmdRe
         .await
         .map_err(err)?;
     if req.start {
+        // Through the queue, which starts it at once when there is room.
         state.engine.start(id).map_err(err)?;
     }
     Ok(id)
@@ -78,6 +79,23 @@ pub async fn start_downloads(state: State<'_, AppState>, ids: Vec<DownloadId>) -
         }
     }
     Ok(())
+}
+
+/// Starts downloads right away, ignoring the queue limit and schedule.
+#[tauri::command]
+pub async fn start_now(state: State<'_, AppState>, ids: Vec<DownloadId>) -> CmdResult<()> {
+    for id in ids {
+        let info = state.engine.get(id).map_err(err)?;
+        if info.status != Status::Completed {
+            state.engine.start_now(id).map_err(err)?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn queue_state(state: State<'_, AppState>) -> QueueState {
+    state.queue_state()
 }
 
 #[tauri::command]
