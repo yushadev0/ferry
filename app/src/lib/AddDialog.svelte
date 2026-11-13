@@ -4,6 +4,7 @@
   import { formatBytes } from "./format";
   import Icon from "./Icon.svelte";
   import FileIcon from "./FileIcon.svelte";
+  import { t } from "./i18n.svelte";
 
   let {
     defaultDir,
@@ -116,15 +117,15 @@
 <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
   <form
     class="modal"
-    aria-label="Add download"
+    aria-label={capture ? t("add.fromBrowser") : t("add.title")}
     onsubmit={(e) => {
       e.preventDefault();
       submit(true);
     }}>
-    <h2>{capture ? "Download from browser" : "Add download"}</h2>
+    <h2>{capture ? t("add.fromBrowser") : t("add.title")}</h2>
 
     <label class="field">
-      <span>Address</span>
+      <span>{t("add.address")}</span>
       <div class="input-icon">
         <Icon name="link" size={15} />
         <!-- svelte-ignore a11y_autofocus -->
@@ -146,42 +147,42 @@
             class="name"
             type="text"
             bind:value={fileName}
-            placeholder={suggested || "File name"}
-            aria-label="Save as"
-            title="Rename before downloading"
+            placeholder={suggested || t("add.fileName")}
+            aria-label={t("add.saveAs")}
+            title={t("add.rename")}
             spellcheck="false" />
           <div class="meta" aria-live="polite">
             {#if checking}
-              <span class="muted"><span class="spin"><Icon name="loader" size={12} stroke={2.4} /></span> Checking the link…</span>
+              <span class="muted"><span class="spin"><Icon name="loader" size={12} stroke={2.4} /></span> {t("add.checking")}</span>
             {:else if probeError}
               <span class="warn error" title={probeError}>
                 <Icon name="alert" size={12} stroke={2.4} />
-                <span class="clamp">Couldn't check the link: {probeError}</span>
+                <span class="clamp">{t("add.checkFailed", { error: probeError })}</span>
               </span>
             {:else if info}
-              <span class="size">{info.size == null ? "Unknown size" : formatBytes(info.size)}</span>
+              <span class="size">{info.size == null ? t("add.unknownSize") : formatBytes(info.size)}</span>
               {#if info.resumable}
-                <span class="ok"><Icon name="check" size={12} stroke={2.4} /> Resumable · up to {segments} connections</span>
+                <span class="ok"><Icon name="check" size={12} stroke={2.4} /> {t("add.resumable", { n: segments })}</span>
               {:else}
-                <span class="warn"><Icon name="alert" size={12} stroke={2.4} /> One connection, cannot resume</span>
+                <span class="warn"><Icon name="alert" size={12} stroke={2.4} /> {t("add.notResumable")}</span>
               {/if}
             {/if}
           </div>
         </div>
       {:else}
         <Icon name="down" size={20} />
-        <span>Paste a link to see the file's name and size.</span>
+        <span>{t("add.pasteHint")}</span>
       {/if}
     </div>
 
     <div class="field">
-      <span>Save to</span>
+      <span>{t("add.saveTo")}</span>
       <div class="row">
         <div class="input-icon grow">
           <Icon name="folder" size={15} />
-          <input type="text" bind:value={dir} spellcheck="false" aria-label="Save to folder" />
+          <input type="text" bind:value={dir} spellcheck="false" aria-label={t("add.saveToFolder")} />
         </div>
-        <button type="button" class="btn" onclick={browse}>Browse…</button>
+        <button type="button" class="btn" onclick={browse}>{t("add.browse")}</button>
       </div>
     </div>
 
@@ -195,13 +196,13 @@
         class="btn push"
         disabled={!validUrl || busy}
         onclick={() => submit(false)}
-        title="Add to the list without starting">
-        <Icon name="pause" size={14} /> Add paused
+        title={t("add.pausedTitle")}>
+        <Icon name="pause" size={14} /> {t("add.paused")}
       </button>
-      <button type="button" class="btn" onclick={onclose}>Cancel</button>
+      <button type="button" class="btn" onclick={onclose}>{t("common.cancel")}</button>
       <button type="submit" class="btn primary" disabled={!validUrl || busy}>
         <Icon name="down" size={15} stroke={2.2} />
-        {busy ? "Adding…" : "Download"}
+        {busy ? t("add.adding") : t("add.download")}
       </button>
     </div>
   </form>

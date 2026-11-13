@@ -1,6 +1,6 @@
 {
   "name": "ferry-app",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Ferry Download Center desktop app",
   "type": "module",
   "scripts": {

@@ -3,6 +3,7 @@
 mod browser;
 mod commands;
 mod file_icons;
+mod i18n;
 mod settings;
 
 use std::{path::PathBuf, sync::Mutex, time::Duration};
@@ -104,6 +105,33 @@ fn apply_theme(app: &AppHandle, settings: &Settings) {
     }
 }
 
+/// Rebuilds the tray menu in the language of `settings`.
+fn apply_language(app: &AppHandle, settings: &Settings) {
+    let Some(tray) = app.tray_by_id("main") else {
+        return;
+    };
+    match tray_menu(app, settings.language.resolved()) {
+        Ok(menu) => {
+            let _ = tray.set_menu(Some(menu));
+        }
+        Err(e) => tracing::warn!(error = %e, "could not rebuild the tray menu"),
+    }
+}
+
+fn tray_menu<M: Manager<tauri::Wry>>(app: &M, lang: i18n::Lang) -> tauri::Result<Menu<tauri::Wry>> {
+    use i18n::{text, Text};
+    let show = MenuItem::with_id(app, "show", text(lang, Text::TrayShow), true, None::<&str>)?;
+    let pause_all = MenuItem::with_id(
+        app,
+        "pause_all",
+        text(lang, Text::TrayPauseAll),
+        true,
+        None::<&str>,
+    )?;
+    let quit_item = MenuItem::with_id(app, "quit", text(lang, Text::TrayQuit), true, None::<&str>)?;
+    Menu::with_items(app, &[&show, &pause_all, &quit_item])
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -122,10 +150,8 @@ fn quit(app: &AppHandle) {
 }
 
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "Show Ferry", true, None::<&str>)?;
-    let pause_all = MenuItem::with_id(app, "pause_all", "Pause all", true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &pause_all, &quit_item])?;
+    let lang = app.state::<AppState>().settings().language.resolved();
+    let menu = tray_menu(app, lang)?;
 
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("Ferry Download Center")
@@ -200,14 +226,16 @@ fn forward_events(app: AppHandle, engine: Engine) {
                     continue;
                 }
                 let Ok(info) = engine.get(*id) else { continue };
+                let lang = state.settings().language.resolved();
+                let text = |t| i18n::text(lang, t);
                 let (title, body) = match status {
-                    Status::Completed => ("Download complete", info.file_name),
+                    Status::Completed => (text(i18n::Text::DownloadComplete), info.file_name),
                     Status::Failed => (
-                        "Download failed",
+                        text(i18n::Text::DownloadFailed),
                         format!(
                             "{}: {}",
                             info.file_name,
-                            error.as_deref().unwrap_or("unknown error")
+                            error.as_deref().unwrap_or(text(i18n::Text::UnknownError))
                         ),
                     ),
                     _ => continue,

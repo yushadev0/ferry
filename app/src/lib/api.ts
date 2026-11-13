@@ -54,6 +54,8 @@ export interface Settings {
   /** "HH:MM" */
   scheduleStop: string;
   theme: Theme;
+  /** Interface language; "system" follows Windows. */
+  language: "system" | "en" | "tr";
 }
 
 export interface QueueState {

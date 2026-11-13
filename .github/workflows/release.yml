@@ -11,14 +11,14 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      # The extension has its own version: it ships through the stores.
       - name: Check the tag matches the app version
         shell: bash
         run: |
           version=$(node -p "require('./app/src-tauri/tauri.conf.json').version")
-          ext=$(node -p "require('./extension/manifest.json').version")
           tag="${GITHUB_REF_NAME#v}"
-          if [ "$version" != "$tag" ] || [ "$ext" != "$tag" ]; then
-            echo "::error::tag $GITHUB_REF_NAME, app $version, extension $ext"
+          if [ "$version" != "$tag" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, app $version"
             exit 1
           fi
       - uses: pnpm/action-setup@v4

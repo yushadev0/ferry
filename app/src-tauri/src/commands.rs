@@ -156,7 +156,8 @@ pub async fn remove_downloads(
 pub fn open_file(app: AppHandle, state: State<'_, AppState>, id: DownloadId) -> CmdResult<()> {
     let info = state.engine.get(id).map_err(err)?;
     if info.status != Status::Completed {
-        return Err("The download is not finished yet.".into());
+        let lang = state.settings().language.resolved();
+        return Err(crate::i18n::text(lang, crate::i18n::Text::NotFinished).into());
     }
     let path = info.dir.join(&info.file_name);
     app.opener()
@@ -190,5 +191,6 @@ pub fn save_settings(
 ) -> CmdResult<Settings> {
     let saved = state.update_settings(settings).map_err(err)?;
     crate::apply_theme(&app, &saved);
+    crate::apply_language(&app, &saved);
     Ok(saved)
 }

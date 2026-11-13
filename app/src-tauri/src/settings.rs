@@ -23,6 +23,30 @@ impl Theme {
     }
 }
 
+/// Interface language; `System` follows Windows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Language {
+    #[default]
+    System,
+    En,
+    Tr,
+}
+
+impl Language {
+    /// The language to show: English or Turkish, resolving `System`.
+    pub fn resolved(self) -> crate::i18n::Lang {
+        use crate::i18n::Lang;
+        match self {
+            Language::En => Lang::En,
+            Language::Tr => Lang::Tr,
+            Language::System => sys_locale::get_locale()
+                .filter(|l| l.to_lowercase().starts_with("tr"))
+                .map_or(Lang::En, |_| Lang::Tr),
+        }
+    }
+}
+
 /// User preferences, stored as JSON in the app config directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -44,6 +68,7 @@ pub struct Settings {
     /// Local time, "HH:MM". Earlier than the start means the window runs overnight.
     pub schedule_stop: String,
     pub theme: Theme,
+    pub language: Language,
 }
 
 impl Default for Settings {
@@ -59,6 +84,7 @@ impl Default for Settings {
             schedule_start: "02:00".into(),
             schedule_stop: "08:00".into(),
             theme: Theme::System,
+            language: Language::System,
         }
     }
 }

@@ -1,9 +1,15 @@
 import type { Download, Segment } from "./api";
+import { lang, t } from "./i18n.svelte";
 
 const UNITS = ["B", "KB", "MB", "GB", "TB"];
 
+/** A number with the current language's decimal separator ("3.72" or "3,72"). */
+function decimal(value: number, digits: number): string {
+  return value.toLocaleString(lang(), { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
 export function formatBytes(bytes: number | null | undefined): string {
-  if (bytes == null) return "Unknown";
+  if (bytes == null) return t("fmt.unknown");
   let value = bytes;
   let unit = 0;
   while (value >= 1024 && unit < UNITS.length - 1) {
@@ -11,7 +17,7 @@ export function formatBytes(bytes: number | null | undefined): string {
     unit++;
   }
   const digits = unit === 0 || value >= 100 ? 0 : value >= 10 ? 1 : 2;
-  return `${value.toFixed(digits)} ${UNITS[unit]}`;
+  return `${decimal(value, digits)} ${UNITS[unit]}`;
 }
 
 export function formatSpeed(bytesPerSecond: number | undefined): string {
@@ -21,10 +27,15 @@ export function formatSpeed(bytesPerSecond: number | undefined): string {
 export function formatEta(remaining: number | null, speed: number | undefined): string {
   if (remaining == null || !speed) return "";
   const s = Math.ceil(remaining / speed);
-  if (s < 60) return `${s} s`;
-  if (s < 3600) return `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, "0")} s`;
-  const h = Math.floor(s / 3600);
-  return `${h} h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")} min`;
+  const two = (n: number) => String(n).padStart(2, "0");
+  if (s < 60) return t("fmt.seconds", { s });
+  if (s < 3600) return t("fmt.minutes", { m: Math.floor(s / 60), s: two(s % 60) });
+  return t("fmt.hours", { h: Math.floor(s / 3600), m: two(Math.floor((s % 3600) / 60)) });
+}
+
+/** A whole percentage the way the language writes it: "61%" or "%61". */
+export function formatPercent(value: number): string {
+  return (Math.floor(value) / 100).toLocaleString(lang(), { style: "percent" });
 }
 
 export function percent(downloaded: number, size: number | null): number | null {
@@ -38,14 +49,16 @@ export function extension(name: string): string {
 }
 
 /** "14:05", or "Tomorrow 02:00" / "Mon 02:00" when not today. */
-export function formatStartTime(unixSeconds: number, now = new Date()): string {
+export function formatStartTime(unixSeconds: number, now = new Date(), lower = false): string {
   const at = new Date(unixSeconds * 1000);
-  const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  // The clock follows Windows' regional format (24-hour like the time fields),
+  // the words follow the interface language.
+  const time = at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
   const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const days = Math.round((day(at) - day(now)) / 86_400_000);
   if (days === 0) return time;
-  if (days === 1) return `Tomorrow ${time}`;
-  return `${at.toLocaleDateString([], { weekday: "short" })} ${time}`;
+  if (days === 1) return t(lower ? "fmt.tomorrowLower" : "fmt.tomorrow", { time });
+  return `${at.toLocaleDateString(lang(), { weekday: "short" })} ${time}`;
 }
 
 export function segmentLength(s: Segment, size: number | null): number {

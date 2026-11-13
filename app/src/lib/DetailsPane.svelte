@@ -2,6 +2,7 @@
   import type { Download } from "./api";
   import FileIcon from "./FileIcon.svelte";
   import Icon from "./Icon.svelte";
+  import { t } from "./i18n.svelte";
   import {
     formatBytes,
     formatEta,
@@ -46,16 +47,22 @@
             n: i + 1,
             fill: (done / len) * 100,
             finished,
-            label: finished ? "Done" : speed ? formatSpeed(speed) : d.status === "downloading" ? "Waiting" : "",
+            label: finished
+              ? t("details.done")
+              : speed
+                ? formatSpeed(speed)
+                : d.status === "downloading"
+                  ? t("details.waiting")
+                  : "",
           };
         })
       : [],
   );
 </script>
 
-<aside class="pane" aria-label="Selected download">
+<aside class="pane" aria-label={t("details.label")}>
   {#if !d}
-    <p class="empty">Select a download to see its details and connections.</p>
+    <p class="empty">{t("details.empty")}</p>
   {:else}
     <div class="head">
       <FileIcon name={d.file_name} size={40} />
@@ -68,29 +75,31 @@
 
     <dl class="facts">
       <div>
-        <dt>Downloaded</dt>
+        <dt>{t("details.downloaded")}</dt>
         <dd>
-          {d.status === "completed" ? formatBytes(d.size) : `${formatBytes(d.downloaded)} of ${formatBytes(d.size)}`}
+          {d.status === "completed"
+            ? formatBytes(d.size)
+            : t("details.ofTotal", { done: formatBytes(d.downloaded), total: formatBytes(d.size) })}
         </dd>
       </div>
       {#if d.status === "downloading"}
         <div>
-          <dt>Speed</dt>
-          <dd>{formatSpeed(d.speed) || "Starting…"}</dd>
+          <dt>{t("details.speed")}</dt>
+          <dd>{formatSpeed(d.speed) || t("details.starting")}</dd>
         </div>
         <div>
-          <dt>Time left</dt>
-          <dd>{d.size != null ? formatEta(d.size - d.downloaded, d.speed) || "—" : "Unknown"}</dd>
+          <dt>{t("details.timeLeft")}</dt>
+          <dd>{d.size != null ? formatEta(d.size - d.downloaded, d.speed) || "—" : t("details.unknown")}</dd>
         </div>
       {:else if d.status === "scheduled" && d.start_at}
         <div>
-          <dt>Starts</dt>
+          <dt>{t("details.starts")}</dt>
           <dd>{formatStartTime(d.start_at)}</dd>
         </div>
       {/if}
       <div>
-        <dt>Resumable</dt>
-        <dd>{d.resumable ? "Yes" : "No"}</dd>
+        <dt>{t("details.resumable")}</dt>
+        <dd>{d.resumable ? t("details.yes") : t("details.no")}</dd>
       </div>
     </dl>
 
@@ -101,11 +110,11 @@
     {#if lanes.length}
       <section>
         <div class="lanes-head">
-          <h3>Connections</h3>
+          <h3>{t("details.connections")}</h3>
           <span class="muted">
             {d.status === "downloading"
-              ? `${d.connections ?? 0} open`
-              : `${lanes.length} ${lanes.length === 1 ? "part" : "parts"}`}
+              ? t("details.open", { n: d.connections ?? 0 })
+              : t("details.parts", { n: lanes.length })}
           </span>
         </div>
         {#if d.resumable}
@@ -119,16 +128,16 @@
             {/each}
           </ol>
         {:else}
-          <p class="muted">This server does not allow split downloads, so one connection is used.</p>
+          <p class="muted">{t("details.single")}</p>
         {/if}
       </section>
     {/if}
 
     <div class="actions">
       {#if d.status === "completed"}
-        <button class="btn" onclick={onopen}><Icon name="open" /> Open</button>
+        <button class="btn" onclick={onopen}><Icon name="open" /> {t("details.openFile")}</button>
       {/if}
-      <button class="btn" onclick={onshowfolder}><Icon name="folder" /> Show in folder</button>
+      <button class="btn" onclick={onshowfolder}><Icon name="folder" /> {t("details.showInFolder")}</button>
     </div>
   {/if}
 </aside>

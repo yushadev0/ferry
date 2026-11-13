@@ -43,7 +43,7 @@ and runs a queue on your schedule. A browser extension hands your downloads over
 
 **🧭 See what's happening.** The progress bar shows every part, and the details pane shows each connection's speed. Downloads are grouped into unfinished, finished and failed, and searchable.
 
-**🪟 At home on Windows 11.** Light or dark, following Windows or your choice. Windows' own file icons, notifications when downloads finish, and a tray icon so Ferry can keep working with the window closed.
+**🪟 At home on Windows 11.** Light or dark, in English or Turkish, following Windows or your choice. Windows' own file icons, notifications when downloads finish, and a tray icon so Ferry can keep working with the window closed.
 
 ## The browser extension
 
@@ -78,13 +78,13 @@ To try the extension from source, open `chrome://extensions`, turn on Developer 
 | [`app`](app) | The desktop app: [Tauri 2](https://tauri.app) (Rust) with a Svelte + TypeScript UI. |
 | [`extension`](extension) | The browser extension (Manifest V3). |
 
-Releases are built by GitHub Actions: bump the version in `Cargo.toml`, `app/src-tauri/tauri.conf.json`, `app/package.json` and `extension/manifest.json`, then push a `vX.Y.Z` tag.
+Releases are built by GitHub Actions: bump the version in `Cargo.toml`, `app/src-tauri/tauri.conf.json` and `app/package.json`, then push a `vX.Y.Z` tag. The extension has its own version in `extension/manifest.json` and ships through the Chrome Web Store.
 
 ## Türkçe
 
 Ferry, Windows için hızlı ve ücretsiz bir indirme yöneticisi. Her dosyayı parçalara bölüp aynı anda birkaç bağlantıyla indiriyor; biten parçaların yerine kalanları yeniden bölüyor, böylece indirme sonuna kadar hızlı kalıyor. İndirmeleri istediğin an duraklatıp sonra devam ettirebilirsin; Ferry'yi kapatsan, bilgisayarı yeniden başlatsan ya da bağlantı kopsa bile. Kuyruk aynı anda birkaç indirmeyi çalıştırıyor, istersen yalnızca gece saatlerinde ve bir hız sınırının altında. Chrome eklentisi, tarayıcıda başlattığın indirmeleri oturum bilgisiyle birlikte Ferry'ye gönderiyor; gizli pencerelere hiç dokunmuyor.
 
-Kurmak için [son sürümden](https://github.com/yushadev0/ferry/releases/latest) `Ferry.Download.Center_x.y.z_x64-setup.exe` dosyasını indirip çalıştır. SmartScreen uyarırsa **Ek bilgi › Yine de çalıştır**'ı seç. Ardından eklentiyi [Chrome Web Store](https://chromewebstore.google.com/detail/ofkibiokjdlboldiiplkllehifkjbihd)'dan ekle. Arayüz şimdilik İngilizce.
+Kurmak için [son sürümden](https://github.com/yushadev0/ferry/releases/latest) `Ferry.Download.Center_x.y.z_x64-setup.exe` dosyasını indirip çalıştır. SmartScreen uyarırsa **Ek bilgi › Yine de çalıştır**'ı seç. Ardından eklentiyi [Chrome Web Store](https://chromewebstore.google.com/detail/ofkibiokjdlboldiiplkllehifkjbihd)'dan ekle. Arayüz Türkçe ve İngilizce; Windows'un diline göre açılır, Ayarlar'dan değiştirebilirsin.
 
 ## License
 

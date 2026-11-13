@@ -3,7 +3,7 @@
   import { SvelteSet } from "svelte/reactivity";
   import { Menu, PredefinedMenuItem } from "@tauri-apps/api/menu";
   import * as api from "$lib/api";
-  import { formatBytes, formatEta, formatSpeed, formatStartTime, percent } from "$lib/format";
+  import { formatBytes, formatEta, formatPercent, formatSpeed, formatStartTime, percent } from "$lib/format";
   import Icon, { type IconName } from "$lib/Icon.svelte";
   import AppLogo from "$lib/AppLogo.svelte";
   import FileIcon from "$lib/FileIcon.svelte";
@@ -12,14 +12,16 @@
   import AddDialog from "$lib/AddDialog.svelte";
   import SettingsDialog from "$lib/SettingsDialog.svelte";
   import ScheduleDialog from "$lib/ScheduleDialog.svelte";
+  import { setLanguage, t } from "$lib/i18n.svelte";
+  import type { Key } from "$lib/locales/en";
 
   type Filter = "all" | "active" | "completed" | "failed";
 
-  const FILTERS: { id: Filter; label: string; icon: IconName }[] = [
-    { id: "all", label: "All downloads", icon: "list" },
-    { id: "active", label: "Unfinished", icon: "activity" },
-    { id: "completed", label: "Finished", icon: "check" },
-    { id: "failed", label: "Failed", icon: "alert" },
+  const FILTERS: { id: Filter; label: Key; icon: IconName }[] = [
+    { id: "all", label: "nav.all", icon: "list" },
+    { id: "active", label: "nav.active", icon: "activity" },
+    { id: "completed", label: "nav.completed", icon: "check" },
+    { id: "failed", label: "nav.failed", icon: "alert" },
   ];
 
   const UNFINISHED: api.Status[] = ["queued", "scheduled", "downloading", "paused"];
@@ -86,23 +88,27 @@
       case "downloading":
         return {
           icon: "down",
-          text: d.connections ? `Downloading · ${d.connections} connection${d.connections === 1 ? "" : "s"}` : "Downloading",
+          text: d.connections ? t("status.connections", { n: d.connections }) : t("status.downloading"),
           tone: "accent",
         };
       case "queued":
-        return { icon: "clock", text: queue.running ? "Waiting in queue" : `Waiting · queue resumes at ${queue.resumesAt}`, tone: "muted" };
+        return {
+          icon: "clock",
+          text: queue.running ? t("status.waiting") : t("status.waitingResumes", { time: queue.resumesAt ?? "" }),
+          tone: "muted",
+        };
       case "scheduled":
         return {
           icon: "clock",
-          text: d.start_at ? `Starts ${formatStartTime(d.start_at).replace("Tomorrow", "tomorrow")}` : "Scheduled",
+          text: d.start_at ? t("status.starts", { time: formatStartTime(d.start_at, new Date(), true) }) : t("status.scheduled"),
           tone: "muted",
         };
       case "paused":
-        return { icon: "pause", text: "Paused", tone: "warn" };
+        return { icon: "pause", text: t("status.paused"), tone: "warn" };
       case "failed":
-        return { icon: "alert", text: d.error ?? "Failed", tone: "danger" };
+        return { icon: "alert", text: d.error ?? t("status.failed"), tone: "danger" };
       case "completed":
-        return { icon: "check", text: "Finished", tone: "ok" };
+        return { icon: "check", text: t("status.finished"), tone: "ok" };
     }
   }
 
@@ -179,7 +185,10 @@
   }
 
   $effect(() => {
-    if (settings) api.applyTheme(settings.theme);
+    if (settings) {
+      api.applyTheme(settings.theme);
+      setLanguage(settings.language);
+    }
   });
 
   onMount(() => {
@@ -235,16 +244,16 @@
     const sep = () => PredefinedMenuItem.new({ item: "Separator" });
     const menu = await Menu.new({
       items: [
-        { id: "open", text: "Open", enabled: d.status === "completed", action: () => run(() => api.openFile(d.id)) },
-        { id: "folder", text: "Show in folder", action: () => run(() => api.showInFolder(d.id)) },
+        { id: "open", text: t("menu.open"), enabled: d.status === "completed", action: () => run(() => api.openFile(d.id)) },
+        { id: "folder", text: t("menu.showInFolder"), action: () => run(() => api.showInFolder(d.id)) },
         await sep(),
-        { id: "resume", text: "Resume", enabled: can.resume, action: () => run(() => api.startDownloads(ids())) },
-        { id: "pause", text: "Pause", enabled: can.pause, action: () => run(() => api.pauseDownloads(ids())) },
-        { id: "now", text: "Start now", enabled: can.startNow, action: () => run(() => api.startNow(ids())) },
-        { id: "schedule", text: "Schedule…", enabled: can.schedule, action: () => (scheduleIds = ids()) },
+        { id: "resume", text: t("menu.resume"), enabled: can.resume, action: () => run(() => api.startDownloads(ids())) },
+        { id: "pause", text: t("menu.pause"), enabled: can.pause, action: () => run(() => api.pauseDownloads(ids())) },
+        { id: "now", text: t("menu.startNow"), enabled: can.startNow, action: () => run(() => api.startNow(ids())) },
+        { id: "schedule", text: t("menu.schedule"), enabled: can.schedule, action: () => (scheduleIds = ids()) },
         await sep(),
-        { id: "copy", text: "Copy link", action: () => run(() => navigator.clipboard.writeText(d.url)) },
-        { id: "remove", text: "Remove…", action: () => (confirmRemove = true) },
+        { id: "copy", text: t("menu.copyLink"), action: () => run(() => navigator.clipboard.writeText(d.url)) },
+        { id: "remove", text: t("menu.remove"), action: () => (confirmRemove = true) },
       ],
     });
     await menu.popup();
@@ -315,7 +324,7 @@
 <svelte:window {onkeydown} onpaste={onPaste} />
 
 <div class="app">
-  <nav class="nav" aria-label="Categories">
+  <nav class="nav" aria-label={t("nav.categories")}>
     <div class="brand">
       <AppLogo size={22} />
       <span>Ferry</span>
@@ -324,57 +333,57 @@
     {#each FILTERS as f (f.id)}
       <button class="nav-item" class:active={filter === f.id} onclick={() => (filter = f.id)} aria-current={filter === f.id}>
         <span class="nav-icon"><Icon name={f.icon} /></span>
-        <span class="nav-label">{f.label}</span>
+        <span class="nav-label">{t(f.label)}</span>
         <span class="nav-count">{counts[f.id]}</span>
       </button>
     {/each}
 
-    <h2 class="nav-heading">Queue</h2>
+    <h2 class="nav-heading">{t("nav.queue")}</h2>
     <dl class="queue-card">
-      <div><dt>Running</dt><dd>{running.length} of {settings?.maxActive ?? "–"}</dd></div>
-      <div><dt>Waiting</dt><dd>{waiting.length}</dd></div>
+      <div><dt>{t("queue.running")}</dt><dd>{t("queue.runningOf", { n: running.length, max: settings?.maxActive ?? "–" })}</dd></div>
+      <div><dt>{t("queue.waiting")}</dt><dd>{waiting.length}</dd></div>
       <div>
-        <dt>Next scheduled</dt>
-        <dd>{scheduled.length ? formatStartTime(scheduled[0].start_at ?? 0) : "None"}</dd>
+        <dt>{t("queue.nextScheduled")}</dt>
+        <dd>{scheduled.length ? formatStartTime(scheduled[0].start_at ?? 0) : t("queue.none")}</dd>
       </div>
       {#if !queue.running}
-        <div class="held"><dt>On hold</dt><dd>until {queue.resumesAt}</dd></div>
+        <div class="held"><dt>{t("queue.onHold")}</dt><dd>{t("queue.until", { time: queue.resumesAt ?? "" })}</dd></div>
       {/if}
     </dl>
 
     <div class="nav-spacer"></div>
     <button class="nav-item" disabled={!settings} onclick={() => (showSettings = true)}>
       <span class="nav-icon"><Icon name="settings" /></span>
-      <span class="nav-label">Settings</span>
+      <span class="nav-label">{t("nav.settings")}</span>
     </button>
   </nav>
 
   <main class="main">
-    <div class="commands" role="toolbar" aria-label="Download actions">
-      <button class="btn primary" onclick={() => openAdd()} title="Add a download (Ctrl+N)">
-        <Icon name="plus" stroke={2.2} /> Add download
+    <div class="commands" role="toolbar" aria-label={t("cmd.toolbar")}>
+      <button class="btn primary" onclick={() => openAdd()} title={t("cmd.addTitle")}>
+        <Icon name="plus" stroke={2.2} /> {t("cmd.add")}
       </button>
       <span class="sep"></span>
-      <button class="cmd" disabled={!can.resume} onclick={() => run(() => api.startDownloads(ids()))} title="Add to the queue; starts when there is a free slot">
-        <Icon name="play" /> Resume
+      <button class="cmd" disabled={!can.resume} onclick={() => run(() => api.startDownloads(ids()))} title={t("cmd.resumeTitle")}>
+        <Icon name="play" /> {t("cmd.resume")}
       </button>
       <button class="cmd" disabled={!can.pause} onclick={() => run(() => api.pauseDownloads(ids()))}>
-        <Icon name="pause" /> Pause
+        <Icon name="pause" /> {t("cmd.pause")}
       </button>
-      <button class="cmd" disabled={!can.startNow} onclick={() => run(() => api.startNow(ids()))} title="Start right away, ignoring the queue limit and schedule (double-click)">
-        <Icon name="zap" /> Start now
+      <button class="cmd" disabled={!can.startNow} onclick={() => run(() => api.startNow(ids()))} title={t("cmd.startNowTitle")}>
+        <Icon name="zap" /> {t("cmd.startNow")}
       </button>
-      <button class="cmd" disabled={!can.remove} onclick={() => (confirmRemove = true)} title="Remove from the list (Delete)">
-        <Icon name="trash" /> Remove
+      <button class="cmd" disabled={!can.remove} onclick={() => (confirmRemove = true)} title={t("cmd.removeTitle")}>
+        <Icon name="trash" /> {t("cmd.remove")}
       </button>
       <span class="sep"></span>
-      <button class="cmd" disabled={!can.schedule} onclick={() => (scheduleIds = ids())} title="Start the selected downloads at a time you choose">
-        <Icon name="clock" /> Schedule
+      <button class="cmd" disabled={!can.schedule} onclick={() => (scheduleIds = ids())} title={t("cmd.scheduleTitle")}>
+        <Icon name="clock" /> {t("cmd.schedule")}
       </button>
       <span class="spacer"></span>
       <label class="search">
         <Icon name="search" size={14} />
-        <input type="search" placeholder="Search downloads" aria-label="Search downloads (Ctrl+F)" bind:value={search} bind:this={searchInput} />
+        <input type="search" placeholder={t("cmd.search")} aria-label={t("cmd.searchLabel")} bind:value={search} bind:this={searchInput} />
       </label>
     </div>
 
@@ -382,7 +391,7 @@
       <div class="banner" role="alert">
         <Icon name="alert" />
         <span>{banner}</span>
-        <button class="icon-btn" aria-label="Dismiss" onclick={() => (banner = null)}><Icon name="x" size={14} /></button>
+        <button class="icon-btn" aria-label={t("cmd.dismiss")} onclick={() => (banner = null)}><Icon name="x" size={14} /></button>
       </div>
     {/if}
 
@@ -390,23 +399,23 @@
       <div class="table-wrap">
         <div class="table">
           <div class="thead">
-            <span>Name</span><span class="num">Size</span><span>Progress</span><span class="num">Speed</span><span class="num">Left</span>
+            <span>{t("list.name")}</span><span class="num">{t("list.size")}</span><span>{t("list.progress")}</span><span class="num">{t("list.speed")}</span><span class="num">{t("list.left")}</span>
           </div>
 
           {#if visible.length === 0}
             <div class="empty">
               <AppLogo size={48} />
               {#if needle}
-                <p>No downloads match “{search.trim()}”.</p>
+                <p>{t("list.noMatch", { q: search.trim() })}</p>
               {:else if downloads.length === 0}
-                <p><b>No downloads yet</b></p>
-                <p>Choose <b>Add download</b>, or paste a link anywhere in this window.</p>
+                <p><b>{t("list.emptyTitle")}</b></p>
+                <p>{@html t("list.emptyHint")}</p>
               {:else}
-                <p>Nothing in this category.</p>
+                <p>{t("list.emptyCategory")}</p>
               {/if}
             </div>
           {:else}
-            <div class="rows" role="listbox" aria-label="Downloads" aria-multiselectable="true" tabindex="-1">
+            <div class="rows" role="listbox" aria-label={t("list.downloads")} aria-multiselectable="true" tabindex="-1">
               {#each visible as d (d.id)}
                 {@const st = statusLine(d)}
                 {@const pct = percent(d.downloaded, d.size)}
@@ -430,7 +439,7 @@
                   <span class="num">{formatBytes(d.size)}</span>
                   <div class="progress">
                     <SegmentBar {d} />
-                    <span class="pct">{pct === null ? formatBytes(d.downloaded) : `${Math.floor(pct)}%`}</span>
+                    <span class="pct">{pct === null ? formatBytes(d.downloaded) : formatPercent(pct)}</span>
                   </div>
                   <span class="num">{d.status === "downloading" ? formatSpeed(d.speed) : ""}</span>
                   <span class="num muted">
@@ -451,13 +460,13 @@
     </div>
 
     <footer class="statusbar">
-      <span>{running.length} downloading</span>
-      {#if waiting.length}<span>{waiting.length} waiting</span>{/if}
-      {#if scheduled.length}<span>{scheduled.length} scheduled</span>{/if}
-      {#if totalSpeed}<span class="strong">{formatSpeed(totalSpeed)} total</span>{/if}
-      <span>{settings?.speedLimitKib ? `Limit ${formatSpeed(settings.speedLimitKib * 1024)}` : "No speed limit"}</span>
+      <span>{t("bar.downloading", { n: running.length })}</span>
+      {#if waiting.length}<span>{t("bar.waiting", { n: waiting.length })}</span>{/if}
+      {#if scheduled.length}<span>{t("bar.scheduled", { n: scheduled.length })}</span>{/if}
+      {#if totalSpeed}<span class="strong">{t("bar.total", { speed: formatSpeed(totalSpeed) })}</span>{/if}
+      <span>{settings?.speedLimitKib ? t("bar.limit", { speed: formatSpeed(settings.speedLimitKib * 1024) }) : t("bar.noLimit")}</span>
       {#if !queue.running}
-        <span class="held"><Icon name="clock" size={12} /> Queue on hold until {queue.resumesAt}</span>
+        <span class="held"><Icon name="clock" size={12} /> {t("bar.onHold", { time: queue.resumesAt ?? "" })}</span>
       {/if}
     </footer>
   </main>
@@ -479,16 +488,16 @@
 
 {#if confirmRemove}
   <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && (confirmRemove = false)}>
-    <div class="modal narrow" role="alertdialog" aria-label="Remove downloads">
-      <h2>Remove {selected.size === 1 ? "this download" : `${selected.size} downloads`}?</h2>
-      <p class="hint">Unfinished parts are always deleted.</p>
+    <div class="modal narrow" role="alertdialog" aria-label={t("remove.label")}>
+      <h2>{selected.size === 1 ? t("remove.titleOne") : t("remove.titleMany", { n: selected.size })}</h2>
+      <p class="hint">{t("remove.hint")}</p>
       <label class="check">
         <input type="checkbox" bind:checked={deleteFiles} />
-        Also delete finished files from disk
+        {t("remove.deleteFiles")}
       </label>
       <div class="actions">
-        <button class="btn" onclick={() => (confirmRemove = false)}>Cancel</button>
-        <button class="btn primary" onclick={removeSelected}>Remove</button>
+        <button class="btn" onclick={() => (confirmRemove = false)}>{t("common.cancel")}</button>
+        <button class="btn primary" onclick={removeSelected}>{t("remove.confirm")}</button>
       </div>
     </div>
   </div>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import * as api from "./api";
   import { formatStartTime } from "./format";
+  import { t } from "./i18n.svelte";
 
   let {
     ids,
@@ -41,23 +42,23 @@
 <svelte:window onkeydown={(e) => e.key === "Escape" && onclose()} />
 
 <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
-  <form class="modal narrow" aria-label="Schedule" onsubmit={save}>
-    <h2>Schedule {ids.length === 1 ? "download" : `${ids.length} downloads`}</h2>
+  <form class="modal narrow" aria-label={t("schedule.label")} onsubmit={save}>
+    <h2>{t("schedule.title", { n: ids.length })}</h2>
     <label class="field">
-      <span>Start at</span>
+      <span>{t("schedule.startAt")}</span>
       <!-- svelte-ignore a11y_autofocus -->
       <input type="time" bind:value={time} required autofocus />
     </label>
     <p class="hint">
-      {#if startAt != null}Joins the queue at <b>{formatStartTime(startAt)}</b>.{/if}
-      Running downloads pause until then and keep their progress.
+      {#if startAt != null}{@html t("schedule.joins", { time: formatStartTime(startAt) })}{/if}
+      {t("schedule.hint")}
     </p>
     {#if error}
       <p class="error-text">{error}</p>
     {/if}
     <div class="actions">
-      <button type="button" class="btn" onclick={onclose}>Cancel</button>
-      <button type="submit" class="btn primary" disabled={startAt == null || busy}>Schedule</button>
+      <button type="button" class="btn" onclick={onclose}>{t("common.cancel")}</button>
+      <button type="submit" class="btn primary" disabled={startAt == null || busy}>{t("schedule.confirm")}</button>
     </div>
   </form>
 </div>

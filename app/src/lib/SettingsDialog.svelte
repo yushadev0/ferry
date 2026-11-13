@@ -2,6 +2,7 @@
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import * as api from "./api";
   import Icon from "./Icon.svelte";
+  import { setLanguage, t } from "./i18n.svelte";
 
   let {
     settings,
@@ -23,10 +24,14 @@
   let error = $state<string | null>(null);
   let busy = $state(false);
 
-  // Preview the theme while the dialog is open; closing puts back whatever is saved.
+  // Preview the theme and language while the dialog is open; closing puts back whatever is saved.
   $effect(() => {
     api.applyTheme(draft.theme);
-    return () => api.applyTheme(settings.theme);
+    setLanguage(draft.language);
+    return () => {
+      api.applyTheme(settings.theme);
+      setLanguage(settings.language);
+    };
   });
 
   async function browse() {
@@ -62,42 +67,55 @@
 <svelte:window onkeydown={(e) => e.key === "Escape" && onclose()} />
 
 <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
-  <form class="modal wide" aria-label="Settings" onsubmit={save}>
-    <h2>Settings</h2>
+  <form class="modal wide" aria-label={t("settings.title")} onsubmit={save}>
+    <h2>{t("settings.title")}</h2>
 
     <div class="scroll">
       <section>
-        <h3>Appearance</h3>
+        <h3>{t("settings.appearance")}</h3>
         <div class="card">
           <span class="card-icon"><Icon name="theme" size={20} /></span>
           <label class="card-text" for="theme">
-            <span>Theme</span>
-            <small>Light, dark, or the same as Windows.</small>
+            <span>{t("settings.theme")}</span>
+            <small>{t("settings.themeHint")}</small>
           </label>
           <select id="theme" bind:value={draft.theme}>
-            <option value="system">Use system setting</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
+            <option value="system">{t("settings.system")}</option>
+            <option value="light">{t("settings.light")}</option>
+            <option value="dark">{t("settings.dark")}</option>
+          </select>
+        </div>
+        <div class="card">
+          <span class="card-icon"><Icon name="globe" size={20} /></span>
+          <label class="card-text" for="language">
+            <span>{t("settings.language")}</span>
+            <small>{t("settings.languageHint")}</small>
+          </label>
+          <select id="language" bind:value={draft.language}>
+            <option value="system">{t("settings.system")}</option>
+            <!-- Each language in its own name, so it can be found in any language. -->
+            <option value="en" lang="en">English</option>
+            <option value="tr" lang="tr">Türkçe</option>
           </select>
         </div>
       </section>
 
       <section>
-        <h3>Downloads</h3>
+        <h3>{t("settings.downloads")}</h3>
         <div class="card">
           <span class="card-icon"><Icon name="folder" size={20} /></span>
           <div class="card-text">
-            <span>Download folder</span>
-            <small class="path" title={draft.downloadDir}>{draft.downloadDir || "Not set"}</small>
+            <span>{t("settings.folder")}</span>
+            <small class="path" title={draft.downloadDir}>{draft.downloadDir || t("settings.notSet")}</small>
           </div>
-          <button type="button" class="btn" onclick={browse}>Change…</button>
+          <button type="button" class="btn" onclick={browse}>{t("settings.change")}</button>
         </div>
 
         <div class="card">
           <span class="card-icon"><Icon name="lanes" size={20} /></span>
           <label class="card-text" for="segments">
-            <span>Connections per download</span>
-            <small>More is faster on most servers. If a server refuses, Ferry uses fewer on its own.</small>
+            <span>{t("settings.segments")}</span>
+            <small>{t("settings.segmentsHint")}</small>
           </label>
           <span class="card-value">{draft.segments}</span>
           <input id="segments" type="range" min="1" max="16" bind:value={draft.segments} />
@@ -105,12 +123,12 @@
       </section>
 
       <section>
-        <h3>Queue</h3>
+        <h3>{t("settings.queue")}</h3>
         <div class="card">
           <span class="card-icon"><Icon name="stack" size={20} /></span>
           <label class="card-text" for="max-active">
-            <span>Downloads at the same time</span>
-            <small>The rest wait their turn. <b>Start now</b> skips the queue.</small>
+            <span>{t("settings.maxActive")}</span>
+            <small>{@html t("settings.maxActiveHint")}</small>
           </label>
           <span class="card-value">{draft.maxActive}</span>
           <input id="max-active" type="range" min="1" max="10" bind:value={draft.maxActive} />
@@ -120,15 +138,15 @@
           <label class="card">
             <span class="card-icon"><Icon name="gauge" size={20} /></span>
             <span class="card-text">
-              <span>Limit download speed</span>
-              <small>Shared by all downloads, so browsing and calls stay smooth.</small>
+              <span>{t("settings.limit")}</span>
+              <small>{t("settings.limitHint")}</small>
             </span>
-            <span class="card-value">{limitOn ? "On" : "Off"}</span>
+            <span class="card-value">{limitOn ? t("settings.on") : t("settings.off")}</span>
             <input type="checkbox" role="switch" class="switch" bind:checked={limitOn} />
           </label>
           {#if limitOn}
             <div class="sub">
-              <span>Total speed at most</span>
+              <span>{t("settings.limitAtMost")}</span>
               <div class="row">
                 <input
                   class="num"
@@ -136,8 +154,8 @@
                   min="1"
                   step={unit === "MB/s" ? 1 : 64}
                   bind:value={limitValue}
-                  aria-label="Speed limit" />
-                <select value={unit} onchange={(e) => changeUnit(e.currentTarget.value as Unit)} aria-label="Unit">
+                  aria-label={t("settings.limitLabel")} />
+                <select value={unit} onchange={(e) => changeUnit(e.currentTarget.value as Unit)} aria-label={t("settings.unit")}>
                   <option>KB/s</option>
                   <option>MB/s</option>
                 </select>
@@ -150,46 +168,46 @@
           <label class="card">
             <span class="card-icon"><Icon name="clock" size={20} /></span>
             <span class="card-text">
-              <span>Run the queue only at certain hours</span>
-              <small>Outside these hours downloads wait. Running ones pause and keep their progress.</small>
+              <span>{t("settings.hours")}</span>
+              <small>{t("settings.hoursHint")}</small>
             </span>
-            <span class="card-value">{draft.scheduleEnabled ? "On" : "Off"}</span>
+            <span class="card-value">{draft.scheduleEnabled ? t("settings.on") : t("settings.off")}</span>
             <input type="checkbox" role="switch" class="switch" bind:checked={draft.scheduleEnabled} />
           </label>
           {#if draft.scheduleEnabled}
             <div class="sub">
-              <span>From</span>
+              <span>{t("settings.from")}</span>
               <div class="row">
-                <input type="time" bind:value={draft.scheduleStart} aria-label="Queue start time" />
-                <span class="muted">to</span>
-                <input type="time" bind:value={draft.scheduleStop} aria-label="Queue stop time" />
+                <input type="time" bind:value={draft.scheduleStart} aria-label={t("settings.startTime")} />
+                <span class="muted">{t("settings.to")}</span>
+                <input type="time" bind:value={draft.scheduleStop} aria-label={t("settings.stopTime")} />
               </div>
             </div>
             {#if draft.scheduleStop < draft.scheduleStart}
-              <div class="sub note">Runs overnight, ending the next morning.</div>
+              <div class="sub note">{t("settings.overnight")}</div>
             {/if}
           {/if}
         </div>
       </section>
 
       <section>
-        <h3>App</h3>
+        <h3>{t("settings.app")}</h3>
         <label class="card">
           <span class="card-icon"><Icon name="bell" size={20} /></span>
           <span class="card-text">
-            <span>Notifications</span>
-            <small>Tell me when a download finishes or fails.</small>
+            <span>{t("settings.notify")}</span>
+            <small>{t("settings.notifyHint")}</small>
           </span>
-          <span class="card-value">{draft.notifyOnComplete ? "On" : "Off"}</span>
+          <span class="card-value">{draft.notifyOnComplete ? t("settings.on") : t("settings.off")}</span>
           <input type="checkbox" role="switch" class="switch" bind:checked={draft.notifyOnComplete} />
         </label>
         <label class="card">
           <span class="card-icon"><Icon name="window" size={20} /></span>
           <span class="card-text">
-            <span>Keep running in the tray</span>
-            <small>Closing the window leaves Ferry downloading in the notification area.</small>
+            <span>{t("settings.tray")}</span>
+            <small>{t("settings.trayHint")}</small>
           </span>
-          <span class="card-value">{draft.closeToTray ? "On" : "Off"}</span>
+          <span class="card-value">{draft.closeToTray ? t("settings.on") : t("settings.off")}</span>
           <input type="checkbox" role="switch" class="switch" bind:checked={draft.closeToTray} />
         </label>
       </section>
@@ -200,8 +218,8 @@
     {/if}
 
     <div class="actions">
-      <button type="button" class="btn" onclick={onclose}>Cancel</button>
-      <button type="submit" class="btn primary" disabled={busy}>Save</button>
+      <button type="button" class="btn" onclick={onclose}>{t("common.cancel")}</button>
+      <button type="submit" class="btn primary" disabled={busy}>{t("common.save")}</button>
     </div>
   </form>
 </div>

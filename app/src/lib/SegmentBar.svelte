@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Download } from "./api";
   import { partsOf, segmentDone, segmentLength } from "./format";
+  import { t } from "./i18n.svelte";
 
   let { d }: { d: Download } = $props();
 
@@ -17,7 +18,7 @@
   class="bar {d.status}"
   class:indeterminate={d.size == null && d.status === "downloading"}
   role="progressbar"
-  aria-label="Progress"
+  aria-label={t("list.progress")}
   aria-valuemin="0"
   aria-valuemax={d.size ?? undefined}
   aria-valuenow={d.size == null ? undefined : d.downloaded}>
