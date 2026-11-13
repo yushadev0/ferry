@@ -1,0 +1,27 @@
+{
+  "name": "Ferry",
+  "year": 2026,
+  "frame": "window",
+  "stack": [
+    "Rust",
+    "Tauri",
+    "Svelte",
+    "TypeScript"
+  ],
+  "download": "https://github.com/yushadev0/ferry/releases/latest",
+  "tagline": {
+    "en": "A fast, free download manager for Windows.",
+    "tr": "Windows için hızlı ve ücretsiz bir indirme yöneticisi."
+  },
+  "body": {
+    "en": [
+      "It splits every file into parts that download side by side, and splits again as parts finish, so it stays fast to the end. You can pause and pick up later, even after a restart.",
+      "A queue runs downloads on your schedule under a speed limit, and a Chrome extension hands over the downloads you start in the browser, sign-in included."
+    ],
+    "tr": [
+      "Her dosyayı aynı anda inen parçalara böler, biten parçaların yerine kalanları yeniden böler; böylece sonuna kadar hızlı kalır. İndirmeyi duraklatıp sonra, bilgisayarı yeniden başlatsanız bile kaldığı yerden sürdürebilirsiniz.",
+      "Bir kuyruk indirmeleri sizin belirlediğiniz saatlerde ve bir hız sınırının altında çalıştırır; Chrome eklentisi de tarayıcıda başlattığınız indirmeleri oturum bilgisiyle birlikte Ferry'ye aktarır."
+    ]
+  },
+  "cover": "showcase-cover.webp"
+}
