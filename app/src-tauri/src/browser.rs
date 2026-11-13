@@ -100,11 +100,15 @@ pub fn register_native_host(manifest_dir: &Path) {
 }
 
 /// The extension in each browser's store, as `(registry path, ID, update URL)`.
-/// Filled in once the stores have assigned IDs (see docs/store-listing.md).
+/// See docs/store-listing.md.
 #[cfg(all(windows, not(debug_assertions)))]
 const STORE_EXTENSIONS: &[(&str, &str, &str)] = &[
-    // (r"Google\Chrome", "<chrome web store id>", "https://clients2.google.com/service/update2/crx"),
-    // (r"Microsoft\Edge", "<edge add-ons id>", "https://edge.microsoft.com/extensionwebstorebase/v1/crx"),
+    (
+        r"Google\Chrome",
+        "ofkibiokjdlboldiiplkllehifkjbihd",
+        "https://clients2.google.com/service/update2/crx",
+    ),
+    // Edge Add-ons: added once the listing exists.
 ];
 
 /// Asks Chrome and Edge to offer the store extension: on their next start they

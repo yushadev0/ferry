@@ -5,4 +5,6 @@
 !macro NSIS_HOOK_POSTUNINSTALL
   DeleteRegKey HKCU "Software\Google\Chrome\NativeMessagingHosts\app.yusa.ferry"
   DeleteRegKey HKCU "Software\Microsoft\Edge\NativeMessagingHosts\app.yusa.ferry"
+  ; Without its entry the browser removes the store extension Ferry offered.
+  DeleteRegKey HKCU "Software\Google\Chrome\Extensions\ofkibiokjdlboldiiplkllehifkjbihd"
 !macroend

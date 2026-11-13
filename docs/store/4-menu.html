@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <title>Ferry: right-click any link</title>
+    <link rel="stylesheet" href="../../app/src/app.css" />
+    <link rel="stylesheet" href="shared.css" />
+    <style>
+      .site {
+        position: absolute;
+        inset: 0;
+        padding: 36px 52px;
+        background: #fff;
+      }
+      .site h3 {
+        margin: 0 0 6px;
+        font-size: 26px;
+        letter-spacing: -0.2px;
+      }
+      .site > p {
+        margin: 0 0 22px;
+        color: #5b6470;
+        font-size: 14px;
+      }
+      .lectures {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        width: 560px;
+        border-top: 1px solid #edeff2;
+      }
+      .lectures li {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 13px 4px;
+        border-bottom: 1px solid #edeff2;
+        font-size: 14px;
+      }
+      .lectures .wk {
+        width: 64px;
+        color: #5b6470;
+        font-size: 12px;
+      }
+      .lectures a {
+        color: #005fb8;
+        text-decoration: none;
+      }
+      .lectures .hover a {
+        text-decoration: underline;
+      }
+      .lectures .size {
+        margin-left: auto;
+        color: #5b6470;
+        font-size: 12px;
+      }
+
+      /* Generic right-click menu */
+      .menu {
+        position: absolute;
+        left: 318px;
+        top: 250px;
+        width: 268px;
+        padding: 4px;
+        background: #fff;
+        border: 1px solid #d5d9df;
+        border-radius: 8px;
+        box-shadow: 0 10px 28px rgba(27, 31, 36, 0.18);
+        font-size: 13px;
+      }
+      .menu div {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 30px;
+        padding: 0 10px 0 34px;
+        border-radius: 4px;
+        color: #1b1f24;
+      }
+      .menu hr {
+        margin: 4px 0;
+        border: 0;
+        border-top: 1px solid #e3e6ea;
+      }
+      .menu .ferry {
+        padding-left: 10px;
+        background: #e7f0fb;
+        font-weight: 600;
+      }
+      .cursor {
+        position: absolute;
+        left: 310px;
+        top: 240px;
+      }
+
+      /* extension/popup.css, scoped to the drawn popup */
+      .popup {
+        position: absolute;
+        right: 10px;
+        top: 4px;
+        width: 320px;
+        padding: 14px 16px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        background: #fff;
+        border: 1px solid #d5d9df;
+        border-radius: 8px;
+        box-shadow: 0 16px 40px rgba(27, 31, 36, 0.2);
+        color: #1b1f24;
+      }
+      .popup header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .popup .status {
+        padding: 8px 10px;
+        border-radius: 6px;
+        background: #fafbfc;
+        border: 1px solid #e3e6ea;
+        font-size: 12px;
+        color: #0f7b0f;
+      }
+      .popup .row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .popup .text {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+      }
+      .popup small,
+      .popup .hint,
+      .popup .unit,
+      .popup .label {
+        color: #5b6470;
+        font-size: 12px;
+      }
+      .popup .switch {
+        position: relative;
+        flex: none;
+        width: 40px;
+        height: 20px;
+        border-radius: 10px;
+        background: #005fb8;
+      }
+      .popup .switch::before {
+        content: "";
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #fff;
+      }
+      .popup fieldset {
+        margin: 0;
+        padding: 12px;
+        border: 1px solid #e3e6ea;
+        border-radius: 6px;
+        background: #fafbfc;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .popup .field {
+        gap: 4px;
+      }
+      .popup .box {
+        padding: 5px 8px;
+        border: 1px solid #d5d9df;
+        border-bottom-color: #8a939e;
+        border-radius: 6px;
+        background: #fff;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .popup .link {
+        color: #005fb8;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="copy">
+      <h1>Right-click, or let Ferry catch it</h1>
+      <p>The Ferry button shows that Ferry is connected and which file types it takes over from the browser.</p>
+    </div>
+
+    <div class="window browser" style="left: 64px; top: 176px; width: 1152px; height: 592px">
+      <div class="tabs">
+        <div class="tab"><span class="dot" style="background: #0f7b6c"></span>Open Course Archive</div>
+      </div>
+      <div class="toolbar">
+        <i data-icon="x" data-size="14"></i>
+        <div class="omnibox"><i data-icon="link" data-size="13"></i>courses.example.edu/networks/lectures</div>
+        <span class="ext-button on"><i data-logo data-size="18"></i></span>
+      </div>
+      <div class="page">
+        <div class="site">
+          <h3>Computer Networks · Lectures</h3>
+          <p>Recordings in 1080p. Sign in with your university account to download.</p>
+          <ul class="lectures">
+            <li><span class="wk">Week 5</span><a>Routing and BGP.mp4</a><span class="size">1.1 GB</span></li>
+            <li><span class="wk">Week 6</span><a>Congestion control.mp4</a><span class="size">1.3 GB</span></li>
+            <li class="hover"><span class="wk">Week 7</span><a>Transport layer deep dive.mp4</a><span class="size">1.2 GB</span></li>
+            <li><span class="wk">Week 8</span><a>Wireless networks.mp4</a><span class="size">0.9 GB</span></li>
+            <li><span class="wk">Slides</span><a>All slides, weeks 1–8.zip</a><span class="size">146 MB</span></li>
+          </ul>
+
+          <svg class="cursor" width="20" height="24" viewBox="0 0 22 26">
+            <path d="M6 2v16l4-3.5 3 7 3-1.3-3-6.8 5.5-.4z" fill="#fff" stroke="#111" stroke-width="1.4" stroke-linejoin="round" />
+          </svg>
+          <div class="menu">
+            <div>Open link in new tab</div>
+            <div>Open link in new window</div>
+            <hr />
+            <div>Save link as…</div>
+            <div>Copy link address</div>
+            <hr />
+            <div class="ferry"><i data-logo data-size="16"></i>Download with Ferry</div>
+          </div>
+        </div>
+
+        <div class="popup">
+          <header><i data-logo data-size="20"></i>Ferry</header>
+          <div class="status">Connected to Ferry 0.1.0</div>
+          <div class="row">
+            <span class="text"><span>Capture downloads</span><small>Matching downloads open in Ferry instead of the browser.</small></span>
+            <span class="switch"></span>
+          </div>
+          <fieldset>
+            <div class="field">
+              <span class="label">Smallest file to capture</span>
+              <span class="row" style="gap: 6px"><span class="box" style="width: 80px">1</span><span class="unit">MB</span></span>
+            </div>
+            <div class="field">
+              <span class="label">File types</span>
+              <span class="box">zip rar 7z tar gz tgz xz bz2 zst iso img dmg exe msi msix appx apk deb rpm appimage bin mp4 mkv avi mov webm m4v wmv flv mp3 flac wav m4a ogg opus aac pdf</span>
+            </div>
+            <span class="link">Restore defaults</span>
+          </fieldset>
+          <p class="hint" style="margin: 0">Right-click a link and choose <b>Download with Ferry</b> to send any file.</p>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="shared.js"></script>
+  </body>
+</html>

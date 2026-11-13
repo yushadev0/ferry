@@ -15,9 +15,12 @@ use serde::{Deserialize, Serialize};
 /// Native messaging host name the extension connects to.
 pub const HOST_NAME: &str = "app.yusa.ferry";
 
-/// Extensions allowed to use the host. The first is the unpacked build in
-/// `extension/`, whose ID is fixed by the `key` in its manifest.
-pub const EXTENSION_IDS: &[&str] = &["hieofjpdefhpcbpmbhigbnefpimhmlop"];
+/// Extensions allowed to use the host: the unpacked build in `extension/`
+/// (its ID is fixed by the `key` in its manifest) and the store builds.
+pub const EXTENSION_IDS: &[&str] = &[
+    "hieofjpdefhpcbpmbhigbnefpimhmlop", // unpacked, for development
+    "ofkibiokjdlboldiiplkllehifkjbihd", // Chrome Web Store
+];
 
 /// A request from the extension.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
