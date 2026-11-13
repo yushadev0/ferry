@@ -100,7 +100,6 @@ pub fn register_native_host(manifest_dir: &Path) {
 }
 
 /// The extension in each browser's store, as `(registry path, ID, update URL)`.
-/// See docs/store-listing.md.
 #[cfg(all(windows, not(debug_assertions)))]
 const STORE_EXTENSIONS: &[(&str, &str, &str)] = &[
     (

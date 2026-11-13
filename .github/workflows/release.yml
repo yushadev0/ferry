@@ -42,12 +42,5 @@ jobs:
           projectPath: app
           tagName: ${{ github.ref_name }}
           releaseName: Ferry ${{ github.ref_name }}
-          releaseBody: See the assets below. The extension zip is for the Chrome Web Store and Edge Add-ons.
+          releaseBody: Download the setup file below. The browser extension comes from the Chrome Web Store.
           releaseDraft: true
-      - name: Attach the extension package
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python scripts/pack_extension.py
-          gh release upload "$GITHUB_REF_NAME" dist/ferry-extension-*.zip --clobber

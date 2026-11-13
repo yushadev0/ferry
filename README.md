@@ -40,9 +40,8 @@ cargo test --workspace
 1. Bump the version in `Cargo.toml`, `app/src-tauri/tauri.conf.json`,
    `app/package.json` and `extension/manifest.json`.
 2. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`. The Release
-   workflow builds the installer and the extension zip into a draft release.
-3. Upload the extension zip to the stores (texts in
-   [docs/store-listing.md](docs/store-listing.md)), then publish the release.
+   workflow builds the installer into a draft release.
+3. Upload the new extension version to the stores, then publish the release.
 
 ## License
 
