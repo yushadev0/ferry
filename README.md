@@ -20,7 +20,7 @@ and runs a queue on your schedule. A browser extension hands your downloads over
 
 ## Install
 
-1. Download **`Ferry Download Center_x.y.z_x64-setup.exe`** from the [latest release](https://github.com/yushadev0/ferry/releases/latest).
+1. Download **`Ferry.Download.Center_x.y.z_x64-setup.exe`** from the [latest release](https://github.com/yushadev0/ferry/releases/latest).
 2. Run it. It installs for your user only, without admin rights. Windows SmartScreen may warn that the publisher is unknown, because the installer isn't code-signed yet: choose **More info › Run anyway**.
 3. Add the browser extension from the [Chrome Web Store](https://chromewebstore.google.com/detail/ofkibiokjdlboldiiplkllehifkjbihd). After installing, Ferry also offers it the next time you open Chrome.
 
@@ -84,7 +84,7 @@ Releases are built by GitHub Actions: bump the version in `Cargo.toml`, `app/src
 
 Ferry, Windows için hızlı ve ücretsiz bir indirme yöneticisi. Her dosyayı parçalara bölüp aynı anda birkaç bağlantıyla indiriyor; biten parçaların yerine kalanları yeniden bölüyor, böylece indirme sonuna kadar hızlı kalıyor. İndirmeleri istediğin an duraklatıp sonra devam ettirebilirsin; Ferry'yi kapatsan, bilgisayarı yeniden başlatsan ya da bağlantı kopsa bile. Kuyruk aynı anda birkaç indirmeyi çalıştırıyor, istersen yalnızca gece saatlerinde ve bir hız sınırının altında. Chrome eklentisi, tarayıcıda başlattığın indirmeleri oturum bilgisiyle birlikte Ferry'ye gönderiyor; gizli pencerelere hiç dokunmuyor.
 
-Kurmak için [son sürümden](https://github.com/yushadev0/ferry/releases/latest) `Ferry Download Center_x.y.z_x64-setup.exe` dosyasını indirip çalıştır. SmartScreen uyarırsa **Ek bilgi › Yine de çalıştır**'ı seç. Ardından eklentiyi [Chrome Web Store](https://chromewebstore.google.com/detail/ofkibiokjdlboldiiplkllehifkjbihd)'dan ekle. Arayüz şimdilik İngilizce.
+Kurmak için [son sürümden](https://github.com/yushadev0/ferry/releases/latest) `Ferry.Download.Center_x.y.z_x64-setup.exe` dosyasını indirip çalıştır. SmartScreen uyarırsa **Ek bilgi › Yine de çalıştır**'ı seç. Ardından eklentiyi [Chrome Web Store](https://chromewebstore.google.com/detail/ofkibiokjdlboldiiplkllehifkjbihd)'dan ekle. Arayüz şimdilik İngilizce.
 
 ## License
 
