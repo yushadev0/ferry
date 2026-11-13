@@ -9,7 +9,7 @@ A lightweight, open-source download manager written in Rust, inspired by Interne
 - Segmented downloads: files are split into parts that download in parallel, with dynamic re-splitting
 - Pause and resume, including after restarting the app
 - Download queues, a scheduler and speed limits
-- A browser extension (Chrome, Edge, Firefox) that hands downloads over to Ferry
+- A browser extension for Chrome and Edge that hands downloads over to Ferry ([details](extension/README.md))
 - A small desktop app built with [Tauri](https://tauri.app). Windows first, then Linux and macOS
 
 ## Repository layout

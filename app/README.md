@@ -7,9 +7,11 @@ pnpm install
 pnpm tauri dev     # run with hot reload
 pnpm tauri build   # NSIS / MSI installers
 pnpm check         # type-check the UI
+cargo build -p ferry-host   # once, so the browser extension can reach the app
 ```
 
 - `src-tauri/src/commands.rs`: commands the UI calls through `invoke`
+- `src-tauri/src/browser.rs`: socket for `ferry-host` and the browser registration
 - `src-tauri/src/lib.rs`: engine setup, tray, notifications, engine events (`ferry://event`)
 - `src/routes/+page.svelte`: the download list; dialogs live in `src/lib`
 - `assets/icon.svg`: icon source; regenerate with `pnpm tauri icon assets/icon.svg`

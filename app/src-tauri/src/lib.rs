@@ -1,5 +1,6 @@
 //! Ferry Download Center desktop app: wires `ferry-core` to a Tauri web UI.
 
+mod browser;
 mod commands;
 mod file_icons;
 mod settings;
@@ -40,6 +41,8 @@ pub struct AppState {
     /// Wakes the scheduler when the settings change.
     schedule_changed: Notify,
     pub file_icons: file_icons::FileIcons,
+    /// Downloads from the browser the UI hasn't picked up yet.
+    captures: Mutex<Vec<ferry_host::Capture>>,
 }
 
 impl AppState {
@@ -57,6 +60,17 @@ impl AppState {
         *self.settings.lock().unwrap_or_else(|e| e.into_inner()) = new.clone();
         self.schedule_changed.notify_one();
         Ok(new)
+    }
+
+    pub fn push_capture(&self, capture: ferry_host::Capture) {
+        self.captures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(capture);
+    }
+
+    pub fn take_captures(&self) -> Vec<ferry_host::Capture> {
+        std::mem::take(&mut *self.captures.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Re-checks schedules now instead of at the next tick.
@@ -242,7 +256,10 @@ pub fn run() {
                 settings_path,
                 schedule_changed: Notify::new(),
                 file_icons: file_icons::FileIcons::new(paths.app_cache_dir()?),
+                captures: Mutex::new(Vec::new()),
             });
+            browser::register_native_host(&data_dir);
+            browser::listen(app.handle().clone());
             run_scheduler(app.handle().clone());
             build_tray(app)?;
             Ok(())
@@ -275,6 +292,7 @@ pub fn run() {
             commands::show_in_folder,
             commands::get_settings,
             commands::save_settings,
+            commands::take_captures,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Ferry");

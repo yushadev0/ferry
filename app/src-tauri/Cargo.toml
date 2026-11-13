@@ -31,6 +31,11 @@ tracing.workspace = true
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 png = "0.18.1"
 base64 = "0.23.1"
+interprocess = { version = "2.4", features = ["tokio"] }
+ferry-host = { version = "0.1.0", path = "../../crates/ferry-host" }
 
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 file_icon_provider = "1.0.2"
+
+[target."cfg(windows)".dependencies]
+winreg = "0.56"

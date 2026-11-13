@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Ferry Download Center",
+  "short_name": "Ferry",
+  "version": "0.1.0",
+  "description": "Hands your downloads to Ferry Download Center for faster, resumable downloads.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoud/4jwX2jjL8wBP22CRNafIhV0BAnTbsYNNQyccTAIxXrQvya3P4R7Fd66F92H++Tr5gRs3ccwZN7YRfwR6iNlfBmyr00OYal8lBZLauwyUWzudSg5PwJ43Lm0sbhtd1xd/RRfcb66ZdnFpb3AqYKyInmEqmBPETot7fWN4VpXDrRS7XUnhIm53uBHYLaGYdmReqQC3FgL9b+EvhRV0pOf16C6btyQDipwjHNvIVIQhA3qqyjPiGuVuwmiHmmX7DBuvU6yYlcel3kzuo7/CyvmSIu8iym1ipe7pIKZoIAu75wlpbmAp5SE+lk5YNwlfCSyay7UHVa2lDbyiZ5ZVNQIDAQAB",
+  "minimum_chrome_version": "116",
+  "permissions": ["downloads", "nativeMessaging", "contextMenus", "storage", "cookies"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": {
+    "default_title": "Ferry",
+    "default_popup": "popup.html",
+    "default_icon": { "32": "icons/32.png", "64": "icons/64.png" }
+  },
+  "icons": { "32": "icons/32.png", "64": "icons/64.png", "128": "icons/128.png" }
+}

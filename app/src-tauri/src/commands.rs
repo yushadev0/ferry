@@ -26,8 +26,22 @@ pub fn get_download(state: State<'_, AppState>, id: DownloadId) -> CmdResult<Dow
 }
 
 #[tauri::command]
-pub async fn inspect_url(state: State<'_, AppState>, url: String) -> CmdResult<ProbeInfo> {
-    state.engine.probe(url.trim(), &[]).await.map_err(err)
+pub async fn inspect_url(
+    state: State<'_, AppState>,
+    url: String,
+    headers: Option<Vec<(String, String)>>,
+) -> CmdResult<ProbeInfo> {
+    state
+        .engine
+        .probe(url.trim(), &headers.unwrap_or_default())
+        .await
+        .map_err(err)
+}
+
+/// Downloads caught in the browser since the last call, oldest first.
+#[tauri::command]
+pub fn take_captures(state: State<'_, AppState>) -> Vec<ferry_host::Capture> {
+    state.take_captures()
 }
 
 #[derive(Debug, Deserialize)]

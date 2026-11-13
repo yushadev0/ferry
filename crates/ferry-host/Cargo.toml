@@ -10,3 +10,5 @@ authors.workspace = true
 [dependencies]
 serde_json.workspace = true
 anyhow.workspace = true
+interprocess = "2.4"
+serde = { workspace = true, features = ["derive"] }

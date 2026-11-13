@@ -80,12 +80,35 @@ export interface AddRequest {
   url: string;
   dir?: string;
   fileName?: string;
+  /** Headers from the browser, such as Cookie and Referer. */
+  headers?: [string, string][];
   start?: boolean;
+}
+
+/** A download handed over by the browser extension. */
+export interface Capture {
+  url: string;
+  fileName: string | null;
+  fileSize: number | null;
+  referrer: string | null;
+  cookies: string | null;
+  userAgent: string | null;
+}
+
+/** HTTP headers that make Ferry's requests look like the browser's. */
+export function captureHeaders(c: Capture): [string, string][] {
+  const pairs: [string, string | null][] = [
+    ["Referer", c.referrer],
+    ["Cookie", c.cookies],
+    ["User-Agent", c.userAgent],
+  ];
+  return pairs.filter((p): p is [string, string] => !!p[1]?.trim());
 }
 
 export const listDownloads = () => invoke<Download[]>("list_downloads");
 export const getDownload = (id: number) => invoke<Download>("get_download", { id });
-export const inspectUrl = (url: string) => invoke<ProbeInfo>("inspect_url", { url });
+export const inspectUrl = (url: string, headers?: [string, string][]) =>
+  invoke<ProbeInfo>("inspect_url", { url, headers });
 export const addDownload = (req: AddRequest) => invoke<number>("add_download", { req });
 export const startDownloads = (ids: number[]) => invoke<void>("start_downloads", { ids });
 export const startNow = (ids: number[]) => invoke<void>("start_now", { ids });
@@ -100,10 +123,16 @@ export const openFile = (id: number) => invoke<void>("open_file", { id });
 export const showInFolder = (id: number) => invoke<void>("show_in_folder", { id });
 export const fileIcon = (ext: string) => invoke<string | null>("file_icon", { ext });
 export const getSettings = () => invoke<Settings>("get_settings");
+export const takeCaptures = () => invoke<Capture[]>("take_captures");
 export const saveSettings = (settings: Settings) => invoke<Settings>("save_settings", { settings });
 
 export function onEngineEvent(handler: (event: EngineEvent) => void): Promise<UnlistenFn> {
   return listen<EngineEvent>("ferry://event", (e) => handler(e.payload));
+}
+
+/** Fires when downloads from the browser are waiting; fetch them with `takeCaptures`. */
+export function onCapture(handler: () => void): Promise<UnlistenFn> {
+  return listen("ferry://capture", () => handler());
 }
 
 export function onQueueState(handler: (state: QueueState) => void): Promise<UnlistenFn> {

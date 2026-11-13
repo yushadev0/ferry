@@ -9,11 +9,26 @@
     defaultDir,
     segments,
     initialUrl = "",
+    capture = null,
     onclose,
-  }: { defaultDir: string; segments: number; initialUrl?: string; onclose: () => void } = $props();
+  }: {
+    defaultDir: string;
+    segments: number;
+    initialUrl?: string;
+    /** Set when the download comes from the browser extension. */
+    capture?: api.Capture | null;
+    onclose: () => void;
+  } = $props();
+
+  // Cookies and referer from the browser, so links behind a login work. They
+  // only apply while the address is the one the browser sent.
+  // svelte-ignore state_referenced_locally
+  const browserHeaders = capture ? api.captureHeaders(capture) : [];
+  // svelte-ignore state_referenced_locally
+  const browserUrl = capture?.url ?? "";
 
   // svelte-ignore state_referenced_locally
-  let url = $state(initialUrl);
+  let url = $state(capture?.url ?? initialUrl);
   // svelte-ignore state_referenced_locally
   let dir = $state(defaultDir);
   let fileName = $state("");
@@ -26,6 +41,7 @@
   let probeSeq = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
+  const headers = $derived(url.trim() === browserUrl ? browserHeaders : []);
   const validUrl = $derived(/^(https?|ftp):\/\/\S+$/i.test(url.trim()));
 
   /** Last path segment of the URL, as a stand-in until the server answers. */
@@ -38,7 +54,7 @@
       return "";
     }
   });
-  const suggested = $derived(info?.filename || urlName);
+  const suggested = $derived(info?.filename || capture?.fileName || urlName);
   const shownName = $derived(fileName.trim() || suggested);
 
   function scheduleProbe() {
@@ -56,7 +72,7 @@
     const seq = ++probeSeq;
     checking = true;
     try {
-      const result = await api.inspectUrl(url.trim());
+      const result = await api.inspectUrl(url.trim(), headers);
       if (seq !== probeSeq) return;
       info = result;
     } catch (e) {
@@ -76,7 +92,7 @@
     busy = true;
     submitError = null;
     try {
-      await api.addDownload({ url: url.trim(), dir, fileName: fileName.trim() || undefined, start });
+      await api.addDownload({ url: url.trim(), dir, fileName: fileName.trim() || undefined, headers, start });
       onclose();
     } catch (e) {
       submitError = api.message(e);
@@ -90,7 +106,7 @@
   }
 
   $effect(() => {
-    if (initialUrl) scheduleProbe();
+    if (url) scheduleProbe();
     return () => clearTimeout(timer);
   });
 </script>
@@ -105,7 +121,7 @@
       e.preventDefault();
       submit(true);
     }}>
-    <h2>Add download</h2>
+    <h2>{capture ? "Download from browser" : "Add download"}</h2>
 
     <label class="field">
       <span>Address</span>
@@ -138,7 +154,10 @@
             {#if checking}
               <span class="muted"><span class="spin"><Icon name="loader" size={12} stroke={2.4} /></span> Checking the link…</span>
             {:else if probeError}
-              <span class="warn"><Icon name="alert" size={12} stroke={2.4} /> {probeError}</span>
+              <span class="warn error" title={probeError}>
+                <Icon name="alert" size={12} stroke={2.4} />
+                <span class="clamp">Couldn't check the link: {probeError}</span>
+              </span>
             {:else if info}
               <span class="size">{info.size == null ? "Unknown size" : formatBytes(info.size)}</span>
               {#if info.resumable}
@@ -272,6 +291,23 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
+  }
+  .meta .error {
+    align-items: flex-start;
+    min-width: 0;
+  }
+  .meta .error :global(svg) {
+    flex: none;
+    margin-top: 2px;
+  }
+  /* Server errors can be long; two lines here, the rest in the tooltip. */
+  .clamp {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
   }
   .size {
     font-weight: 600;

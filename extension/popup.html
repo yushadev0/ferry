@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Ferry</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <img src="icons/32.png" alt="" width="20" height="20" />
+      <h1>Ferry</h1>
+    </header>
+
+    <p id="status" class="status" role="status">Checking…</p>
+
+    <label class="row">
+      <span class="text">
+        <span>Capture downloads</span>
+        <small>Matching downloads open in Ferry instead of the browser.</small>
+      </span>
+      <input id="enabled" type="checkbox" role="switch" class="switch" />
+    </label>
+
+    <fieldset id="filters">
+      <label class="field">
+        <span>Smallest file to capture</span>
+        <span class="inline">
+          <input id="minSizeMB" type="number" min="0" step="1" />
+          <span class="unit">MB</span>
+        </span>
+      </label>
+      <label class="field">
+        <span>File types</span>
+        <textarea id="extensions" rows="4" spellcheck="false"></textarea>
+      </label>
+      <button id="reset" type="button" class="link">Restore defaults</button>
+    </fieldset>
+
+    <p class="hint">Right-click a link and choose <b>Download with Ferry</b> to send any file.</p>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
