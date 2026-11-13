@@ -2,9 +2,16 @@
 
 A lightweight, open-source download manager written in Rust, inspired by Internet Download Manager.
 
-> **Status:** early development. Nothing is usable yet.
+> **Status:** first release (0.1) for Windows. Linux and macOS builds come later.
 
-## Planned features
+## Install
+
+Download `Ferry Download Center_<version>_x64-setup.exe` from
+[Releases](https://github.com/yushadev0/ferry/releases) and run it (no admin
+rights needed). Then add the browser extension from the Chrome Web Store or Edge
+Add-ons; Ferry also offers it in Chrome and Edge after installing.
+
+## Features
 
 - Segmented downloads: files are split into parts that download in parallel, with dynamic re-splitting
 - Pause and resume, including after restarting the app
@@ -27,6 +34,15 @@ A lightweight, open-source download manager written in Rust, inspired by Interne
 cargo build --workspace
 cargo test --workspace
 ```
+
+## Releasing
+
+1. Bump the version in `Cargo.toml`, `app/src-tauri/tauri.conf.json`,
+   `app/package.json` and `extension/manifest.json`.
+2. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`. The Release
+   workflow builds the installer and the extension zip into a draft release.
+3. Upload the extension zip to the stores (texts in
+   [docs/store-listing.md](docs/store-listing.md)), then publish the release.
 
 ## License
 

@@ -259,6 +259,7 @@ pub fn run() {
                 captures: Mutex::new(Vec::new()),
             });
             browser::register_native_host(&data_dir);
+            browser::offer_store_extension();
             browser::listen(app.handle().clone());
             run_scheduler(app.handle().clone());
             build_tray(app)?;

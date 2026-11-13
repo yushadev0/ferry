@@ -7,3 +7,4 @@ app/src-tauri/gen
 .DS_Store
 .vscode/
 .idea/
+app/src-tauri/binaries/

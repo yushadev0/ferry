@@ -1,0 +1,53 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag matches the app version
+        shell: bash
+        run: |
+          version=$(node -p "require('./app/src-tauri/tauri.conf.json').version")
+          ext=$(node -p "require('./extension/manifest.json').version")
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ] || [ "$ext" != "$tag" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, app $version, extension $ext"
+            exit 1
+          fi
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: pnpm install --frozen-lockfile
+        working-directory: app
+      # Builds ferry-host (beforeBuildCommand) and the NSIS installer, then
+      # creates a draft release with it.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: app
+          tagName: ${{ github.ref_name }}
+          releaseName: Ferry ${{ github.ref_name }}
+          releaseBody: See the assets below. The extension zip is for the Chrome Web Store and Edge Add-ons.
+          releaseDraft: true
+      - name: Attach the extension package
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/pack_extension.py
+          gh release upload "$GITHUB_REF_NAME" dist/ferry-extension-*.zip --clobber

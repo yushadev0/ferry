@@ -99,6 +99,33 @@ pub fn register_native_host(manifest_dir: &Path) {
     }
 }
 
+/// The extension in each browser's store, as `(registry path, ID, update URL)`.
+/// Filled in once the stores have assigned IDs (see docs/store-listing.md).
+#[cfg(all(windows, not(debug_assertions)))]
+const STORE_EXTENSIONS: &[(&str, &str, &str)] = &[
+    // (r"Google\Chrome", "<chrome web store id>", "https://clients2.google.com/service/update2/crx"),
+    // (r"Microsoft\Edge", "<edge add-ons id>", "https://edge.microsoft.com/extensionwebstorebase/v1/crx"),
+];
+
+/// Asks Chrome and Edge to offer the store extension: on their next start they
+/// show "Ferry was added" and the user turns it on (or doesn't, and they won't
+/// ask again). Release builds only, so development keeps the unpacked one.
+pub fn offer_store_extension() {
+    #[cfg(all(windows, not(debug_assertions)))]
+    {
+        use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        for (browser, id, update_url) in STORE_EXTENSIONS {
+            let result = hkcu
+                .create_subkey(format!(r"Software\{browser}\Extensions\{id}"))
+                .and_then(|(key, _)| key.set_value("update_url", update_url));
+            if let Err(e) = result {
+                tracing::warn!(browser, error = %e, "could not offer the browser extension");
+            }
+        }
+    }
+}
+
 fn manifest(host: &Path) -> serde_json::Value {
     serde_json::json!({
         "name": HOST_NAME,
