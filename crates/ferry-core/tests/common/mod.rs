@@ -49,6 +49,8 @@ pub struct ServerState {
     pub status_override: Mutex<Option<u16>>,
     pub chunk_delay: Mutex<Option<Duration>>,
     pub bytes_served: AtomicU64,
+    /// Bytes sent while at least one other download was open.
+    pub parallel_bytes: AtomicU64,
     pub range_requests: AtomicUsize,
     pub probe_requests: AtomicUsize,
     /// Refuse downloads beyond this many open at once with HTTP 429.
@@ -59,6 +61,8 @@ pub struct ServerState {
     /// Like nginx `limit_req`: refuse requests (with 429, no Retry-After)
     /// arriving sooner than this after the last accepted one.
     pub min_request_interval: Mutex<Option<Duration>>,
+    /// Requests let through despite `min_request_interval`, like nginx's `burst`.
+    pub request_burst: AtomicUsize,
     last_accepted: Mutex<Option<Instant>>,
 }
 
@@ -94,6 +98,7 @@ pub async fn spawn(opts: Options) -> Server {
         status_override: Mutex::new(None),
         chunk_delay: Mutex::new(None),
         bytes_served: AtomicU64::new(0),
+        parallel_bytes: AtomicU64::new(0),
         range_requests: AtomicUsize::new(0),
         probe_requests: AtomicUsize::new(0),
         max_connections: Mutex::new(None),
@@ -101,6 +106,7 @@ pub async fn spawn(opts: Options) -> Server {
         peak_connections: AtomicUsize::new(0),
         refused: AtomicUsize::new(0),
         min_request_interval: Mutex::new(None),
+        request_burst: AtomicUsize::new(0),
         last_accepted: Mutex::new(None),
     });
     let app = Router::new()
@@ -145,7 +151,7 @@ async fn serve(State(st): State<Arc<ServerState>>, headers: HeaderMap) -> Respon
     }
     if let Some(interval) = *st.min_request_interval.lock().unwrap() {
         let mut last = st.last_accepted.lock().unwrap();
-        if last.is_some_and(|t| t.elapsed() < interval) {
+        if last.is_some_and(|t| t.elapsed() < interval) && !take_one(&st.request_burst) {
             st.refused.fetch_add(1, Ordering::SeqCst);
             return Response::builder()
                 .status(StatusCode::TOO_MANY_REQUESTS)
@@ -226,6 +232,9 @@ async fn serve(State(st): State<Arc<ServerState>>, headers: HeaderMap) -> Respon
                 next = next.min(cut_at);
             }
             st.bytes_served.fetch_add(next - pos, Ordering::SeqCst);
+            if st.open_connections.load(Ordering::SeqCst) >= 2 {
+                st.parallel_bytes.fetch_add(next - pos, Ordering::SeqCst);
+            }
             let bytes = Bytes::copy_from_slice(&st.data[pos as usize..next as usize]);
             Some((Ok::<_, io::Error>(bytes), next))
         }

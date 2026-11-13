@@ -461,6 +461,8 @@ async fn worker_loop(
     token: &CancellationToken,
 ) -> Result<Exit> {
     let cfg = &inner.config();
+    // Whether the server has let this connection in at least once.
+    let mut accepted = false;
     loop {
         let Some(mut idx) = lock(state).claim(resumable, cfg.min_split_size) else {
             return Ok(Exit::Done);
@@ -471,14 +473,30 @@ async fn worker_loop(
                 return Ok(Exit::Done);
             }
             let before = lock(state).segs[idx].pos;
-            match fetch_segment(inner, url, headers, part, state, &mut idx, resumable, token).await
+            match fetch_segment(
+                inner,
+                url,
+                headers,
+                part,
+                state,
+                &mut idx,
+                resumable,
+                &mut accepted,
+                token,
+            )
+            .await
             {
                 Ok(()) => break,
                 Err(e @ Error::Busy { .. }) => {
                     {
                         let mut s = lock(state);
                         s.throttled = true;
-                        if s.workers > 1 {
+                        // A refused first request means the server wants fewer
+                        // connections. Once it has accepted this one, a refusal
+                        // only limits how often we ask (like nginx `limit_req`),
+                        // so keep the slot and retry, unless retries run out.
+                        let out_of_retries = attempt >= retry_budget(cfg, &e);
+                        if s.workers > 1 && (!accepted || out_of_retries) {
                             // Hand the segment to the connections the server accepted.
                             s.workers -= 1;
                             s.in_use[idx] = false;
@@ -522,7 +540,8 @@ async fn worker_loop(
 
 /// Downloads the rest of segment `*idx`, continuing into following idle
 /// segments on the same connection (`*idx` is updated). Returns `Ok` when the
-/// last one is finished or the download is cancelled.
+/// last one is finished or the download is cancelled. Sets `*accepted` once
+/// the server answers the request with data.
 #[allow(clippy::too_many_arguments)]
 async fn fetch_segment(
     inner: &Inner,
@@ -532,6 +551,7 @@ async fn fetch_segment(
     state: &Shared,
     idx: &mut usize,
     resumable: bool,
+    accepted: &mut bool,
     token: &CancellationToken,
 ) -> Result<()> {
     let (mut pos, end) = {
@@ -568,6 +588,7 @@ async fn fetch_segment(
         r = request.send() => r?,
     };
     check_status(resp.status(), resp.headers())?;
+    *accepted = true;
     if resumable {
         let start = resp
             .headers()

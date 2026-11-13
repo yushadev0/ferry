@@ -393,6 +393,43 @@ async fn request_rate_limits_are_handled_with_few_requests() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn accepted_connections_survive_request_rate_limits() {
+    // Like fsn1-speed.hetzner.com: a short burst, then one request per interval.
+    // Two connections get in; when one finishes its part and asks for the next,
+    // it hits the rate limit. That says nothing about how many connections the
+    // server accepts, so it must wait and retry rather than give up its slot.
+    let server = common::spawn(common::Options::default()).await;
+    *server.state.min_request_interval.lock().unwrap() = Some(Duration::from_millis(300));
+    server.state.request_burst.store(2, Ordering::SeqCst);
+    *server.state.chunk_delay.lock().unwrap() = Some(Duration::from_millis(4));
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::in_memory(config()).unwrap();
+    let mut rx = engine.subscribe();
+
+    let id = engine
+        .add(Request::new(&server.url, dir.path()))
+        .await
+        .unwrap();
+    engine.start(id).unwrap();
+    assert_eq!(wait_settled(&mut rx, id).await, (Status::Completed, None));
+    assert_eq!(
+        std::fs::read(dir.path().join("test.bin")).unwrap(),
+        server.state.data
+    );
+    assert!(server.state.refused.load(Ordering::SeqCst) > 0);
+
+    // Before the fix one connection gave up on its first refusal and only
+    // half the file came in over two connections (about 80% with it).
+    let parallel = server.state.parallel_bytes.load(Ordering::SeqCst) as f64;
+    let share = parallel / server.state.data.len() as f64;
+    assert!(
+        share >= 0.65,
+        "only {:.0}% of the file came in over two connections",
+        share * 100.0
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn inspect_add_and_start_need_one_probe() {
     let server = common::spawn(common::Options::default()).await;
     let dir = tempfile::tempdir().unwrap();
