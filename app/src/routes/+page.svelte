@@ -13,6 +13,7 @@
   import SettingsDialog from "$lib/SettingsDialog.svelte";
   import ScheduleDialog from "$lib/ScheduleDialog.svelte";
   import { setLanguage, t } from "$lib/i18n.svelte";
+  import { startUpdateChecks } from "$lib/updates.svelte";
   import type { Key } from "$lib/locales/en";
 
   type Filter = "all" | "active" | "completed" | "failed";
@@ -202,6 +203,7 @@
       [downloads, settings, queue] = await Promise.all([api.listDownloads(), api.getSettings(), api.queueState()]);
       // Downloads the browser sent while the window was still loading.
       await pullCaptures();
+      startUpdateChecks(() => settings?.autoUpdateCheck ?? true);
     })().catch((e) => (banner = api.message(e)));
     return () => {
       disposed = true;

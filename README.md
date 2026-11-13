@@ -24,6 +24,8 @@ and runs a queue on your schedule. A browser extension hands your downloads over
 2. Run it. It installs for your user only, without admin rights. Windows SmartScreen may warn that the publisher is unknown, because the installer isn't code-signed yet: choose **More info › Run anyway**.
 3. Add the browser extension from the [Chrome Web Store](https://chromewebstore.google.com/detail/ofkibiokjdlboldiiplkllehifkjbihd). After installing, Ferry also offers it the next time you open Chrome.
 
+Ferry keeps itself up to date: it checks GitHub for new versions and tells you, and you install with one click in **Settings › Updates**. Downloads that were running carry on after the restart. Nothing installs without you.
+
 ## What it does
 
 <table>
@@ -65,7 +67,7 @@ Requirements: Windows 10/11, [Rust](https://rustup.rs) (MSVC toolchain), [Node.j
 cd app
 pnpm install
 pnpm tauri dev      # run in development
-pnpm tauri build    # build the installer into target/release/bundle/nsis
+pnpm tauri build    # build the installer into target/release/bundle/nsis (see below)
 cargo test --workspace
 ```
 
@@ -78,13 +80,13 @@ To try the extension from source, open `chrome://extensions`, turn on Developer 
 | [`app`](app) | The desktop app: [Tauri 2](https://tauri.app) (Rust) with a Svelte + TypeScript UI. |
 | [`extension`](extension) | The browser extension (Manifest V3). |
 
-Releases are built by GitHub Actions: bump the version in `Cargo.toml`, `app/src-tauri/tauri.conf.json` and `app/package.json`, then push a `vX.Y.Z` tag. The extension has its own version in `extension/manifest.json` and ships through the Chrome Web Store.
+Installers are signed for the updater, so `pnpm tauri build` needs the private key in `TAURI_SIGNING_PRIVATE_KEY` (the release workflow takes it from the repository secret of the same name). Releases are built by GitHub Actions: bump the version in `Cargo.toml`, `app/src-tauri/tauri.conf.json` and `app/package.json`, then push a `vX.Y.Z` tag. The extension has its own version in `extension/manifest.json` and ships through the Chrome Web Store.
 
 ## Türkçe
 
 Ferry, Windows için hızlı ve ücretsiz bir indirme yöneticisi. Her dosyayı parçalara bölüp aynı anda birkaç bağlantıyla indiriyor; biten parçaların yerine kalanları yeniden bölüyor, böylece indirme sonuna kadar hızlı kalıyor. İndirmeleri istediğin an duraklatıp sonra devam ettirebilirsin; Ferry'yi kapatsan, bilgisayarı yeniden başlatsan ya da bağlantı kopsa bile. Kuyruk aynı anda birkaç indirmeyi çalıştırıyor, istersen yalnızca gece saatlerinde ve bir hız sınırının altında. Chrome eklentisi, tarayıcıda başlattığın indirmeleri oturum bilgisiyle birlikte Ferry'ye gönderiyor; gizli pencerelere hiç dokunmuyor.
 
-Kurmak için [son sürümden](https://github.com/yushadev0/ferry/releases/latest) `Ferry.Download.Center_x.y.z_x64-setup.exe` dosyasını indirip çalıştır. SmartScreen uyarırsa **Ek bilgi › Yine de çalıştır**'ı seç. Ardından eklentiyi [Chrome Web Store](https://chromewebstore.google.com/detail/ofkibiokjdlboldiiplkllehifkjbihd)'dan ekle. Arayüz Türkçe ve İngilizce; Windows'un diline göre açılır, Ayarlar'dan değiştirebilirsin.
+Kurmak için [son sürümden](https://github.com/yushadev0/ferry/releases/latest) `Ferry.Download.Center_x.y.z_x64-setup.exe` dosyasını indirip çalıştır. SmartScreen uyarırsa **Ek bilgi › Yine de çalıştır**'ı seç. Ardından eklentiyi [Chrome Web Store](https://chromewebstore.google.com/detail/ofkibiokjdlboldiiplkllehifkjbihd)'dan ekle. Arayüz Türkçe ve İngilizce; Windows'un diline göre açılır, Ayarlar'dan değiştirebilirsin. Ferry yeni sürümleri kendisi bulur ve haber verir; **Ayarlar › Güncellemeler**'den tek tıkla kurarsın.
 
 ## License
 

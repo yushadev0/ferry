@@ -4,7 +4,9 @@ mod browser;
 mod commands;
 mod file_icons;
 mod i18n;
+mod logging;
 mod settings;
+mod update;
 
 use std::{path::PathBuf, sync::Mutex, time::Duration};
 
@@ -44,6 +46,9 @@ pub struct AppState {
     pub file_icons: file_icons::FileIcons,
     /// Downloads from the browser the UI hasn't picked up yet.
     captures: Mutex<Vec<ferry_host::Capture>>,
+    /// Downloads to start again once an update has been installed.
+    pub resume_file: PathBuf,
+    pub log_dir: PathBuf,
 }
 
 impl AppState {
@@ -255,6 +260,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let paths = app.path();
             // FERRY_DATA_DIR keeps the database and settings elsewhere, so a
@@ -265,6 +272,7 @@ pub fn run() {
                 None => paths.app_data_dir()?,
             };
             std::fs::create_dir_all(&data_dir)?;
+            logging::init(&logging::dir(&data_dir));
             let settings_path = match &override_dir {
                 Some(dir) => dir.join("settings.json"),
                 None => paths.app_config_dir()?.join("settings.json"),
@@ -285,7 +293,14 @@ pub fn run() {
                 schedule_changed: Notify::new(),
                 file_icons: file_icons::FileIcons::new(paths.app_cache_dir()?),
                 captures: Mutex::new(Vec::new()),
+                resume_file: update::resume_file(&data_dir),
+                log_dir: logging::dir(&data_dir),
             });
+            // Downloads that were running when an update was installed.
+            {
+                let state = app.state::<AppState>();
+                update::resume(&state.engine, &state.resume_file);
+            }
             browser::register_native_host(&data_dir);
             browser::offer_store_extension();
             browser::listen(app.handle().clone());
@@ -322,6 +337,10 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
             commands::take_captures,
+            commands::prepare_update,
+            commands::update_failed,
+            commands::notify,
+            commands::open_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Ferry");

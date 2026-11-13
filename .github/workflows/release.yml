@@ -35,12 +35,18 @@ jobs:
         working-directory: app
       # Builds ferry-host (beforeBuildCommand) and the NSIS installer, then
       # creates a draft release with it.
+      # Signs the installer and adds latest.json, which installed copies of
+      # Ferry check for updates (Settings › Updates).
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
           projectPath: app
           tagName: ${{ github.ref_name }}
           releaseName: Ferry ${{ github.ref_name }}
           releaseBody: Download the setup file below. The browser extension comes from the Chrome Web Store.
           releaseDraft: true
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true

@@ -69,6 +69,8 @@ pub struct Settings {
     pub schedule_stop: String,
     pub theme: Theme,
     pub language: Language,
+    /// Look for a new version shortly after starting and twice a day.
+    pub auto_update_check: bool,
 }
 
 impl Default for Settings {
@@ -85,6 +87,7 @@ impl Default for Settings {
             schedule_stop: "08:00".into(),
             theme: Theme::System,
             language: Language::System,
+            auto_update_check: true,
         }
     }
 }

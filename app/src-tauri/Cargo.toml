@@ -34,6 +34,10 @@ base64 = "0.23.1"
 interprocess = { version = "2.4", features = ["tokio"] }
 ferry-host = { version = "0.1.0", path = "../../crates/ferry-host" }
 sys-locale = "0.3.2"
+tauri-plugin-updater = "2.14.1"
+tauri-plugin-process = "2.4.0"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "std"] }
+tracing-appender = "0.2.5"
 
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 file_icon_provider = "1.0.2"

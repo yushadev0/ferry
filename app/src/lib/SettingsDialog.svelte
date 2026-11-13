@@ -2,7 +2,11 @@
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import * as api from "./api";
   import Icon from "./Icon.svelte";
+  import AppLogo from "./AppLogo.svelte";
   import { setLanguage, t } from "./i18n.svelte";
+  import { getVersion } from "@tauri-apps/api/app";
+  import { checkForUpdates, installUpdate, updateStatus } from "./updates.svelte";
+  import { formatPercent } from "./format";
 
   let {
     settings,
@@ -23,6 +27,9 @@
   let limitValue = $state(kib === 0 ? 5 : kib % 1024 === 0 ? kib / 1024 : kib);
   let error = $state<string | null>(null);
   let busy = $state(false);
+  let version = $state("");
+  getVersion().then((v) => (version = v));
+  const update = $derived(updateStatus());
 
   // Preview the theme and language while the dialog is open; closing puts back whatever is saved.
   $effect(() => {
@@ -210,6 +217,61 @@
           <span class="card-value">{draft.closeToTray ? t("settings.on") : t("settings.off")}</span>
           <input type="checkbox" role="switch" class="switch" bind:checked={draft.closeToTray} />
         </label>
+        <div class="card">
+          <span class="card-icon"><Icon name="list" size={20} /></span>
+          <div class="card-text">
+            <span>{t("settings.logs")}</span>
+            <small>{t("settings.logsHint")}</small>
+          </div>
+          <button type="button" class="btn" onclick={() => api.openLogs().catch((e) => (error = api.message(e)))}>
+            {t("settings.logsOpen")}
+          </button>
+        </div>
+      </section>
+
+      <section>
+        <h3>{t("updates.title")}</h3>
+        <div class="card">
+          <span class="card-icon"><AppLogo size={22} /></span>
+          <div class="card-text">
+            <span>{t("updates.version", { version })}</span>
+            <small class:ok={update.kind === "upToDate"} class:accent={update.kind === "available"} class:err={update.kind === "error"}>
+              {#if update.kind === "checking"}
+                {t("updates.checking")}
+              {:else if update.kind === "upToDate"}
+                {t("updates.upToDate")}
+              {:else if update.kind === "available"}
+                {t("updates.available", { version: update.version })}
+              {:else if update.kind === "downloading"}
+                {update.progress == null
+                  ? t("updates.downloading")
+                  : t("updates.downloadingPct", { pct: formatPercent(update.progress * 100) })}
+              {:else if update.kind === "error"}
+                <span title={update.message}>{t(update.during === "check" ? "updates.checkFailed" : "updates.failed")}</span>
+              {:else}
+                {t("updates.hint")}
+              {/if}
+            </small>
+          </div>
+          {#if update.kind === "available" || update.kind === "downloading"}
+            <button type="button" class="btn primary" disabled={update.kind === "downloading"} onclick={installUpdate}>
+              {t("updates.install")}
+            </button>
+          {:else}
+            <button type="button" class="btn" disabled={update.kind === "checking"} onclick={checkForUpdates}>
+              {t("updates.check")}
+            </button>
+          {/if}
+        </div>
+        <label class="card">
+          <span class="card-icon"><Icon name="clock" size={20} /></span>
+          <span class="card-text">
+            <span>{t("updates.auto")}</span>
+            <small>{t("updates.autoHint")}</small>
+          </span>
+          <span class="card-value">{draft.autoUpdateCheck ? t("settings.on") : t("settings.off")}</span>
+          <input type="checkbox" role="switch" class="switch" bind:checked={draft.autoUpdateCheck} />
+        </label>
       </section>
     </div>
 
@@ -306,6 +368,15 @@
   }
   .muted {
     color: var(--muted);
+  }
+  small.ok {
+    color: var(--ok);
+  }
+  small.accent {
+    color: var(--accent);
+  }
+  small.err {
+    color: var(--danger);
   }
   p {
     margin: 0;

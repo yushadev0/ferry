@@ -56,6 +56,8 @@ export interface Settings {
   theme: Theme;
   /** Interface language; "system" follows Windows. */
   language: "system" | "en" | "tr";
+  /** Look for a new version shortly after starting and twice a day. */
+  autoUpdateCheck: boolean;
 }
 
 export interface QueueState {
@@ -126,6 +128,11 @@ export const showInFolder = (id: number) => invoke<void>("show_in_folder", { id 
 export const fileIcon = (ext: string) => invoke<string | null>("file_icon", { ext });
 export const getSettings = () => invoke<Settings>("get_settings");
 export const takeCaptures = () => invoke<Capture[]>("take_captures");
+/** Pauses running downloads before an update; the updated app resumes them. */
+export const prepareUpdate = () => invoke<void>("prepare_update");
+export const updateFailed = () => invoke<void>("update_failed");
+export const notify = (title: string, body: string) => invoke<void>("notify", { title, body });
+export const openLogs = () => invoke<void>("open_logs");
 export const saveSettings = (settings: Settings) => invoke<Settings>("save_settings", { settings });
 
 export function onEngineEvent(handler: (event: EngineEvent) => void): Promise<UnlistenFn> {

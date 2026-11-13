@@ -38,6 +38,38 @@ pub async fn inspect_url(
         .map_err(err)
 }
 
+/// Pauses running downloads before an update closes Ferry; the updated app
+/// starts them again.
+#[tauri::command]
+pub async fn prepare_update(state: State<'_, AppState>) -> CmdResult<()> {
+    crate::update::prepare(&state.engine, &state.resume_file)
+        .await
+        .map(|_| ())
+        .map_err(err)
+}
+
+/// The update didn't install: carry on with the paused downloads.
+#[tauri::command]
+pub fn update_failed(state: State<'_, AppState>) {
+    crate::update::resume(&state.engine, &state.resume_file);
+}
+
+/// Opens the folder with Ferry's log files.
+#[tauri::command]
+pub fn open_logs(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+    std::fs::create_dir_all(&state.log_dir).map_err(err)?;
+    app.opener()
+        .open_path(state.log_dir.to_string_lossy(), None::<&str>)
+        .map_err(err)
+}
+
+/// Shows a Windows notification (used for "an update is available").
+#[tauri::command]
+pub fn notify(app: AppHandle, title: String, body: String) {
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app.notification().builder().title(title).body(body).show();
+}
+
 /// Downloads caught in the browser since the last call, oldest first.
 #[tauri::command]
 pub fn take_captures(state: State<'_, AppState>) -> Vec<ferry_host::Capture> {
