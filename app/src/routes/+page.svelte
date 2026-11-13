@@ -436,7 +436,7 @@
 </div>
 
 {#if showAdd && settings}
-  <AddDialog defaultDir={settings.downloadDir} initialUrl={addUrl} onclose={() => (showAdd = false)} />
+  <AddDialog defaultDir={settings.downloadDir} segments={settings.segments} initialUrl={addUrl} onclose={() => (showAdd = false)} />
 {/if}
 
 {#if showSettings && settings}

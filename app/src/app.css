@@ -104,6 +104,12 @@ input[type="url"] {
   width: 100%;
 }
 
+/* Thin overlay-style scrollbars, like Windows 11. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--field-underline) transparent;
+}
+
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
@@ -158,21 +164,45 @@ input[type="url"] {
   border: 1px solid var(--border);
   border-radius: 10px;
   box-shadow: var(--shadow);
-  padding: 22px;
+  padding: 22px 24px 0;
   display: flex;
   flex-direction: column;
   gap: 14px;
+  overflow: hidden;
+  animation: modal-in 160ms cubic-bezier(0.1, 0.9, 0.2, 1);
+}
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: scale(1.04);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .modal {
+    animation: none;
+  }
 }
 .modal h2 {
   margin: 0;
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 600;
 }
+/* Windows 11 content dialog: buttons sit on a tinted band at the bottom. */
 .modal .actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 4px;
+  margin: 6px -24px 0;
+  padding: 18px 24px;
+  background: var(--bg);
+  border-top: 1px solid var(--divider);
+}
+.modal .actions .btn {
+  justify-content: center;
+  min-width: 96px;
+}
+.modal .actions .push {
+  margin-right: auto;
 }
 .field {
   display: flex;
@@ -197,6 +227,94 @@ input[type="checkbox"],
 input[type="range"] {
   accent-color: var(--accent);
 }
+/* Windows 11 toggle switch: <input type="checkbox" role="switch" class="switch"> */
+input.switch {
+  appearance: none;
+  flex: none;
+  position: relative;
+  width: 40px;
+  height: 20px;
+  margin: 0;
+  border: 1px solid var(--field-underline);
+  border-radius: 10px;
+  background: var(--field);
+  transition: background 120ms;
+}
+input.switch::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition:
+    transform 160ms cubic-bezier(0.1, 0.9, 0.2, 1),
+    width 120ms;
+}
+input.switch:hover:not(:disabled)::before {
+  width: 14px;
+  height: 14px;
+  top: 2px;
+}
+input.switch:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+input.switch:checked::before {
+  background: var(--on-accent);
+  transform: translateX(20px);
+}
+input.switch:checked:hover:not(:disabled)::before {
+  transform: translateX(18px);
+}
+input.switch:disabled {
+  opacity: 0.45;
+}
+
+/* Settings-style card: icon, title + description, control on the right. */
+.card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 64px;
+  padding: 12px 16px;
+  background: var(--details);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.card-icon {
+  display: flex;
+  flex: none;
+  color: var(--text);
+}
+.card-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.card-text small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.card-value {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.spin {
+  display: inline-flex;
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .error-text {
   margin: 0;
   color: var(--danger);

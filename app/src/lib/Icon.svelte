@@ -18,6 +18,13 @@
     search: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>',
     x: '<path d="M6 6l12 12M18 6L6 18"/>',
     open: '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+    link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+    lanes: '<path d="M3.5 7h10M3.5 12h17M3.5 17h6"/><path d="M17 5.5v3M13 15.5v3"/>',
+    stack: '<rect x="4" y="4" width="16" height="6" rx="1.2"/><rect x="4" y="13" width="16" height="6" rx="1.2"/>',
+    gauge: '<path d="M4.2 17.5a8.5 8.5 0 1 1 15.6 0"/><path d="M12 13.5l4-4.5"/><circle cx="12" cy="14" r="1"/>',
+    bell: '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
+    window: '<rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><path d="M3.5 8.5h17"/>',
+    loader: '<path d="M12 3.5a8.5 8.5 0 1 0 8.5 8.5"/>',
   } as const;
   export type IconName = keyof typeof PATHS;
 </script>
