@@ -169,6 +169,8 @@ pub fn get_settings(state: State<'_, AppState>) -> Settings {
 }
 
 #[tauri::command]
-pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> CmdResult<Settings> {
-    state.update_settings(settings).map_err(err)
+pub fn save_settings(app: AppHandle, state: State<'_, AppState>, settings: Settings) -> CmdResult<Settings> {
+    let saved = state.update_settings(settings).map_err(err)?;
+    crate::apply_theme(&app, &saved);
+    Ok(saved)
 }

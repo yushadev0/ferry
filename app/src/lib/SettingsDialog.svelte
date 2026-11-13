@@ -23,6 +23,12 @@
   let error = $state<string | null>(null);
   let busy = $state(false);
 
+  // Preview the theme while the dialog is open; closing puts back whatever is saved.
+  $effect(() => {
+    api.applyTheme(draft.theme);
+    return () => api.applyTheme(settings.theme);
+  });
+
   async function browse() {
     const picked = await pickFolder({ directory: true, defaultPath: draft.downloadDir || undefined });
     if (typeof picked === "string") draft.downloadDir = picked;
@@ -60,6 +66,22 @@
     <h2>Settings</h2>
 
     <div class="scroll">
+      <section>
+        <h3>Appearance</h3>
+        <div class="card">
+          <span class="card-icon"><Icon name="theme" size={20} /></span>
+          <label class="card-text" for="theme">
+            <span>Theme</span>
+            <small>Light, dark, or the same as Windows.</small>
+          </label>
+          <select id="theme" bind:value={draft.theme}>
+            <option value="system">Use system setting</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+      </section>
+
       <section>
         <h3>Downloads</h3>
         <div class="card">

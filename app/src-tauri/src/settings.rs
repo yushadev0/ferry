@@ -2,6 +2,27 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// Light or dark appearance; `System` follows the Windows setting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl Theme {
+    /// The window theme to request; `None` lets the OS decide.
+    pub fn window_theme(self) -> Option<tauri::Theme> {
+        match self {
+            Theme::System => None,
+            Theme::Light => Some(tauri::Theme::Light),
+            Theme::Dark => Some(tauri::Theme::Dark),
+        }
+    }
+}
+
 /// User preferences, stored as JSON in the app config directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -22,6 +43,7 @@ pub struct Settings {
     pub schedule_start: String,
     /// Local time, "HH:MM". Earlier than the start means the window runs overnight.
     pub schedule_stop: String,
+    pub theme: Theme,
 }
 
 impl Default for Settings {
@@ -36,6 +58,7 @@ impl Default for Settings {
             schedule_enabled: false,
             schedule_start: "02:00".into(),
             schedule_stop: "08:00".into(),
+            theme: Theme::System,
         }
     }
 }

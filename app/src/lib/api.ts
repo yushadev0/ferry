@@ -38,6 +38,8 @@ export interface ProbeInfo {
   filename: string | null;
 }
 
+export type Theme = "system" | "light" | "dark";
+
 export interface Settings {
   downloadDir: string;
   segments: number;
@@ -51,6 +53,7 @@ export interface Settings {
   scheduleStart: string;
   /** "HH:MM" */
   scheduleStop: string;
+  theme: Theme;
 }
 
 export interface QueueState {
@@ -105,6 +108,11 @@ export function onEngineEvent(handler: (event: EngineEvent) => void): Promise<Un
 
 export function onQueueState(handler: (state: QueueState) => void): Promise<UnlistenFn> {
   return listen<QueueState>("ferry://queue", (e) => handler(e.payload));
+}
+
+/** Points the page's colors at a theme; "system" follows Windows. */
+export function applyTheme(theme: Theme) {
+  document.documentElement.dataset.theme = theme;
 }
 
 /** Turns an invoke rejection into a readable message. */

@@ -175,6 +175,10 @@
     }
   }
 
+  $effect(() => {
+    if (settings) api.applyTheme(settings.theme);
+  });
+
   onMount(() => {
     let disposed = false;
     const unlisten: (() => void)[] = [];

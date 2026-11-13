@@ -83,6 +83,13 @@ fn engine_config(settings: &Settings) -> EngineConfig {
     }
 }
 
+/// Applies the theme setting to the window chrome, native menus and web content.
+fn apply_theme(app: &AppHandle, settings: &Settings) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_theme(settings.theme.window_theme());
+    }
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -224,6 +231,7 @@ pub fn run() {
                 .download_dir()
                 .unwrap_or_else(|_| data_dir.join("downloads"));
             let settings = Settings::load(&settings_path, default_dir);
+            apply_theme(app.handle(), &settings);
 
             let engine = Engine::open(data_dir.join("ferry.db"), engine_config(&settings))
                 .map_err(|e| format!("could not open the download database: {e}"))?;
