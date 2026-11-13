@@ -399,9 +399,11 @@ async fn accepted_connections_survive_request_rate_limits() {
     // it hits the rate limit. That says nothing about how many connections the
     // server accepts, so it must wait and retry rather than give up its slot.
     let server = common::spawn(common::Options::default()).await;
-    *server.state.min_request_interval.lock().unwrap() = Some(Duration::from_millis(300));
+    // Each part takes several request intervals to download, also with the
+    // coarse timers on Windows, so the result doesn't hinge on timing.
+    *server.state.min_request_interval.lock().unwrap() = Some(Duration::from_millis(100));
     server.state.request_burst.store(2, Ordering::SeqCst);
-    *server.state.chunk_delay.lock().unwrap() = Some(Duration::from_millis(4));
+    *server.state.chunk_delay.lock().unwrap() = Some(Duration::from_millis(10));
     let dir = tempfile::tempdir().unwrap();
     let engine = Engine::in_memory(config()).unwrap();
     let mut rx = engine.subscribe();
@@ -419,7 +421,7 @@ async fn accepted_connections_survive_request_rate_limits() {
     assert!(server.state.refused.load(Ordering::SeqCst) > 0);
 
     // Before the fix one connection gave up on its first refusal and only
-    // half the file came in over two connections (about 80% with it).
+    // half the file came in over two connections (over 90% with it).
     let parallel = server.state.parallel_bytes.load(Ordering::SeqCst) as f64;
     let share = parallel / server.state.data.len() as f64;
     assert!(

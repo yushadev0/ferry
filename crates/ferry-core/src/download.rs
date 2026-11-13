@@ -150,7 +150,7 @@ impl State {
             self.in_use[i] = true;
             return Some(i);
         }
-        if !allow_split || self.throttled {
+        if !allow_split {
             return None;
         }
         let (i, remaining) = (0..self.segs.len())
@@ -463,8 +463,17 @@ async fn worker_loop(
     let cfg = &inner.config();
     // Whether the server has let this connection in at least once.
     let mut accepted = false;
-    loop {
-        let Some(mut idx) = lock(state).claim(resumable, cfg.min_split_size) else {
+    // Refusals in a row of an accepted connection (see the Busy arm).
+    let mut busy_attempts = 0;
+    'claim: loop {
+        let claimed = {
+            let mut s = lock(state);
+            // A throttled server costs a request per split, so only split for
+            // connections the server has already accepted.
+            let allow_split = resumable && (accepted || !s.throttled);
+            s.claim(allow_split, cfg.min_split_size)
+        };
+        let Some(mut idx) = claimed else {
             return Ok(Exit::Done);
         };
         let mut attempt = 0;
@@ -486,18 +495,20 @@ async fn worker_loop(
             )
             .await
             {
-                Ok(()) => break,
+                Ok(()) => {
+                    busy_attempts = 0;
+                    break;
+                }
                 Err(e @ Error::Busy { .. }) => {
-                    {
+                    let wait_and_reclaim = {
                         let mut s = lock(state);
                         s.throttled = true;
-                        // A refused first request means the server wants fewer
-                        // connections. Once it has accepted this one, a refusal
-                        // only limits how often we ask (like nginx `limit_req`),
-                        // so keep the slot and retry, unless retries run out.
-                        let out_of_retries = attempt >= retry_budget(cfg, &e);
-                        if s.workers > 1 && (!accepted || out_of_retries) {
-                            // Hand the segment to the connections the server accepted.
+                        if s.workers <= 1 {
+                            false
+                        } else if !accepted || busy_attempts >= retry_budget(cfg, &e) {
+                            // A refused first request means the server wants
+                            // fewer connections: hand the segment to the ones
+                            // it accepted.
                             s.workers -= 1;
                             s.in_use[idx] = false;
                             tracing::debug!(
@@ -506,7 +517,22 @@ async fn worker_loop(
                                 "server busy; dropping a connection"
                             );
                             return Ok(Exit::Retired);
+                        } else {
+                            // The server has accepted this connection, so the
+                            // refusal only limits how often we ask (like nginx
+                            // `limit_req`). Keep the slot and ask again later;
+                            // meanwhile free the segment, so a connection that
+                            // is still reading can carry on into it.
+                            s.in_use[idx] = false;
+                            true
                         }
+                    };
+                    if wait_and_reclaim {
+                        busy_attempts += 1;
+                        if !backoff(cfg, busy_attempts, &e, token).await {
+                            return Ok(Exit::Done);
+                        }
+                        continue 'claim;
                     }
                     if attempt >= retry_budget(cfg, &e) {
                         return Err(e);
