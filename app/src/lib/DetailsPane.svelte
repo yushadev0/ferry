@@ -33,6 +33,8 @@
     }
   });
 
+  const nameParts = $derived(d ? d.file_name.split(/(?<=[-_.])/) : []);
+
   const lanes = $derived(
     d && d.status !== "completed"
       ? partsOf(d).map((s, i) => {
@@ -58,7 +60,8 @@
     <div class="head">
       <FileIcon name={d.file_name} size={40} />
       <div class="title">
-        <h2>{d.file_name}</h2>
+        <!-- Long names wrap after - _ . rather than mid-word. -->
+        <h2>{#each nameParts as part, i (i)}{part}<wbr />{/each}</h2>
         <p class="muted" title={d.url}>{host}</p>
       </div>
     </div>
@@ -159,7 +162,8 @@
     margin: 0;
     font-size: 15px;
     font-weight: 600;
-    word-break: break-all;
+    overflow-wrap: anywhere;
+    text-wrap: balance;
     user-select: text;
   }
   .muted {
