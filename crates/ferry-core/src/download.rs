@@ -103,6 +103,15 @@ struct State {
     segs: Vec<Segment>,
     in_use: Vec<bool>,
     complete: Vec<bool>,
+    /// Data is coming in on this segment's connection. Only such segments are
+    /// split: one still waiting for the server (or retrying) would just hand
+    /// the same wait to another request.
+    flow: Vec<Option<Flow>>,
+    /// How long the server takes to answer a request (moving average). A split
+    /// costs one such wait before the new connection helps.
+    answer_time: Duration,
+    /// The server has answered a request of this run.
+    answered: bool,
     /// Workers still running. A worker turned away by the server (HTTP 429/503)
     /// retires while others remain, so the download settles on the number of
     /// connections the server accepts.
@@ -111,12 +120,33 @@ struct State {
     throttled: bool,
 }
 
+/// Data received by one connection since it started reading.
+#[derive(Debug, Clone, Copy)]
+struct Flow {
+    since: Instant,
+    bytes: u64,
+}
+
+impl Flow {
+    /// Bytes per second, once the connection has read long enough to tell.
+    fn speed(&self, now: Instant) -> Option<f64> {
+        let secs = now.saturating_duration_since(self.since).as_secs_f64();
+        (secs >= FLOW_WARMUP.as_secs_f64()).then(|| self.bytes as f64 / secs)
+    }
+}
+
+/// How long a connection reads before its speed is trusted.
+const FLOW_WARMUP: Duration = Duration::from_millis(500);
+
 impl State {
     fn new(segs: Vec<Segment>) -> Self {
         Self {
             in_use: vec![false; segs.len()],
+            flow: vec![None; segs.len()],
             complete: segs.iter().map(Segment::is_done).collect(),
             segs,
+            answer_time: Duration::from_secs(1),
+            answered: false,
             workers: 0,
             throttled: false,
         }
@@ -124,6 +154,10 @@ impl State {
 
     fn downloaded(&self) -> u64 {
         self.segs.iter().map(Segment::downloaded).sum()
+    }
+
+    fn record_answer(&mut self, waited: Duration) {
+        self.answer_time = (self.answer_time * 3 + waited) / 4;
     }
 
     /// When segment `*idx` is finished at `pos` and the segment starting at
@@ -140,26 +174,48 @@ impl State {
         self.complete[*idx] = true;
         self.in_use[*idx] = false;
         self.in_use[next] = true;
+        self.flow[next] = self.flow[*idx].take();
         *idx = next;
         true
     }
 
-    /// Hands out an idle segment, or splits the largest busy one.
-    fn claim(&mut self, allow_split: bool, min_split: u64) -> Option<usize> {
+    /// Hands out an idle segment, or splits the largest one that is receiving
+    /// data, if a new connection would still save time after waiting for the
+    /// server. While a segment is too new to tell, answers [`Claim::Wait`].
+    fn claim(&mut self, allow_split: bool, min_split: u64, now: Instant) -> Claim {
         if let Some(i) = (0..self.segs.len()).find(|&i| !self.in_use[i] && !self.complete[i]) {
             self.in_use[i] = true;
-            return Some(i);
+            return Claim::Segment(i);
         }
         if !allow_split {
-            return None;
+            return Claim::Done;
         }
-        let (i, remaining) = (0..self.segs.len())
-            .filter(|&i| self.in_use[i] && !self.complete[i])
-            .filter_map(|i| self.segs[i].remaining().map(|r| (i, r)))
-            .max_by_key(|&(_, r)| r)?;
-        if remaining < 2 * min_split.max(1) {
-            return None;
+        let min = 2 * min_split.max(1);
+        // The new half arrives no earlier than one answer time from now, and
+        // it should leave the old connection with work for as long again.
+        let worth = 2.0 * self.answer_time.as_secs_f64();
+        let mut wait = false;
+        let mut best: Option<(usize, u64)> = None;
+        for i in 0..self.segs.len() {
+            if !self.in_use[i] || self.complete[i] {
+                continue;
+            }
+            let Some(remaining) = self.segs[i].remaining().filter(|&r| r >= min) else {
+                continue;
+            };
+            match self.flow[i].and_then(|f| f.speed(now)) {
+                None => wait = true,
+                Some(speed) => {
+                    let secs_left = remaining as f64 / speed.max(1.0);
+                    if secs_left >= worth && best.is_none_or(|(_, r)| remaining > r) {
+                        best = Some((i, remaining));
+                    }
+                }
+            }
         }
+        let Some((i, remaining)) = best else {
+            return if wait { Claim::Wait } else { Claim::Done };
+        };
         let seg = self.segs[i];
         let mid = seg.pos + remaining / 2;
         self.segs[i].end = Some(mid - 1);
@@ -169,10 +225,28 @@ impl State {
             pos: mid,
         });
         self.in_use.push(true);
+        self.flow.push(None);
         self.complete.push(false);
-        Some(self.segs.len() - 1)
+        Claim::Segment(self.segs.len() - 1)
     }
 }
+
+#[derive(Debug, PartialEq, Eq)]
+enum Claim {
+    Segment(usize),
+    /// Nothing to take now, but a segment that has just started (or is still
+    /// waiting for the server) may be worth splitting soon.
+    Wait,
+    /// No work left for another connection.
+    Done,
+}
+
+/// How long a worker with nothing to do waits before asking again.
+const CLAIM_RETRY: Duration = Duration::from_millis(250);
+
+/// Requests in a row sent again (see `EngineConfig::answer_patience`) before
+/// the worker waits the server out.
+const MAX_RESENDS: u32 = 3;
 
 type Shared = Arc<Mutex<State>>;
 
@@ -465,16 +539,25 @@ async fn worker_loop(
     let mut accepted = false;
     // Refusals in a row of an accepted connection (see the Busy arm).
     let mut busy_attempts = 0;
+    // Requests in a row given up on because the server held them.
+    let mut resends = 0;
     'claim: loop {
         let claimed = {
             let mut s = lock(state);
             // A throttled server costs a request per split, so only split for
             // connections the server has already accepted.
             let allow_split = resumable && (accepted || !s.throttled);
-            s.claim(allow_split, cfg.min_split_size)
+            s.claim(allow_split, cfg.min_split_size, Instant::now())
         };
-        let Some(mut idx) = claimed else {
-            return Ok(Exit::Done);
+        let mut idx = match claimed {
+            Claim::Segment(i) => i,
+            Claim::Done => return Ok(Exit::Done),
+            Claim::Wait => {
+                tokio::select! {
+                    _ = token.cancelled() => return Ok(Exit::Done),
+                    _ = tokio::time::sleep(CLAIM_RETRY) => continue 'claim,
+                }
+            }
         };
         let mut attempt = 0;
         loop {
@@ -482,7 +565,8 @@ async fn worker_loop(
                 return Ok(Exit::Done);
             }
             let before = lock(state).segs[idx].pos;
-            match fetch_segment(
+            let patience = (resumable && resends < MAX_RESENDS).then_some(cfg.answer_patience);
+            let fetched = fetch_segment(
                 inner,
                 url,
                 headers,
@@ -491,11 +575,20 @@ async fn worker_loop(
                 &mut idx,
                 resumable,
                 &mut accepted,
+                patience,
                 token,
             )
-            .await
-            {
-                Ok(()) => {
+            .await;
+            lock(state).flow[idx] = None;
+            if matches!(fetched, Ok(Fetch::Stalled)) {
+                // Free the segment and ask again with a fresh request.
+                resends += 1;
+                lock(state).in_use[idx] = false;
+                continue 'claim;
+            }
+            resends = 0;
+            match fetched {
+                Ok(_) => {
                     busy_attempts = 0;
                     break;
                 }
@@ -564,10 +657,20 @@ async fn worker_loop(
     }
 }
 
+enum Fetch {
+    /// The segment is finished, or the download was cancelled.
+    Done,
+    /// The server held the request past `patience` although it has answered
+    /// others; nothing was read.
+    Stalled,
+}
+
 /// Downloads the rest of segment `*idx`, continuing into following idle
-/// segments on the same connection (`*idx` is updated). Returns `Ok` when the
-/// last one is finished or the download is cancelled. Sets `*accepted` once
-/// the server answers the request with data.
+/// segments on the same connection (`*idx` is updated). Returns when the last
+/// one is finished or the download is cancelled. Sets `*accepted` once the
+/// server answers the request with data. With `patience`, gives up on a
+/// request that gets no answer for that long once the server has answered
+/// another one.
 #[allow(clippy::too_many_arguments)]
 async fn fetch_segment(
     inner: &Inner,
@@ -578,8 +681,9 @@ async fn fetch_segment(
     idx: &mut usize,
     resumable: bool,
     accepted: &mut bool,
+    patience: Option<Duration>,
     token: &CancellationToken,
-) -> Result<()> {
+) -> Result<Fetch> {
     let (mut pos, end) = {
         let mut s = lock(state);
         let seg = &mut s.segs[*idx];
@@ -590,7 +694,7 @@ async fn fetch_segment(
         (seg.pos, seg.end)
     };
     if end.is_some_and(|e| pos > e) {
-        return Ok(());
+        return Ok(Fetch::Done);
     }
 
     let mut request = inner.client.get(url).headers(headers.clone());
@@ -609,10 +713,40 @@ async fn fetch_segment(
         };
         request = request.header(RANGE, range);
     }
-    let mut resp = tokio::select! {
-        _ = token.cancelled() => return Ok(()),
-        r = request.send() => r?,
+    let sent = Instant::now();
+    let send = request.send();
+    tokio::pin!(send);
+    let mut check = tokio::time::interval(Duration::from_millis(250));
+    let mut resp = loop {
+        tokio::select! {
+            _ = token.cancelled() => return Ok(Fetch::Done),
+            r = &mut send => break r?,
+            _ = check.tick() => {
+                let waited = sent.elapsed();
+                let mut s = lock(state);
+                // Only once the server has shown it answers: a server that is
+                // slow for every request is just waited for.
+                if patience.is_some_and(|p| waited >= p) && s.answered {
+                    s.record_answer(waited);
+                    tracing::debug!(segment = *idx, pos, "no answer; sending the request again");
+                    return Ok(Fetch::Stalled);
+                }
+            }
+        }
     };
+    let waited = sent.elapsed();
+    {
+        let mut s = lock(state);
+        s.record_answer(waited);
+        s.answered = true;
+    }
+    tracing::debug!(
+        segment = *idx,
+        pos,
+        status = resp.status().as_u16(),
+        waited_ms = waited.as_millis() as u64,
+        "response"
+    );
     check_status(resp.status(), resp.headers())?;
     *accepted = true;
     if resumable {
@@ -669,7 +803,13 @@ async fn fetch_segment(
             file.write_all(&chunk[offset..offset + take]).await?;
             offset += take;
             pos += take as u64;
-            lock(state).segs[*idx].pos = pos;
+            let mut s = lock(state);
+            s.segs[*idx].pos = pos;
+            let flow = s.flow[*idx].get_or_insert(Flow {
+                since: Instant::now(),
+                bytes: 0,
+            });
+            flow.bytes += take as u64;
         }
         file.flush().await?;
         if finished {
@@ -679,12 +819,12 @@ async fn fetch_segment(
     file.flush().await?;
 
     if token.is_cancelled() {
-        return Ok(());
+        return Ok(Fetch::Done);
     }
     let seg = lock(state).segs[*idx];
     match seg.end {
         Some(e) if seg.pos <= e => Err(Error::Truncated),
-        _ => Ok(()),
+        _ => Ok(Fetch::Done),
     }
 }
 
@@ -719,11 +859,21 @@ mod tests {
         assert!(plan(Some(0), true, &cfg(8, 1)).is_empty());
     }
 
+    /// A connection that has read `bytes` over the last second.
+    fn flowing(bytes: u64, now: Instant) -> Option<Flow> {
+        Some(Flow {
+            since: now - Duration::from_secs(1),
+            bytes,
+        })
+    }
+
     #[test]
     fn chain_takes_over_the_next_idle_segment() {
+        let now = Instant::now();
         let mut state = State::new(plan(Some(1000), true, &cfg(4, 100)));
-        assert_eq!(state.claim(false, 100), Some(0));
-        assert_eq!(state.claim(false, 100), Some(1));
+        assert_eq!(state.claim(false, 100, now), Claim::Segment(0));
+        assert_eq!(state.claim(false, 100, now), Claim::Segment(1));
+        state.flow[0] = flowing(10, now);
         let mut idx = 0;
         // Segment 1 is busy, so segment 0 cannot continue into it.
         assert!(!state.chain(&mut idx, 250));
@@ -731,6 +881,8 @@ mod tests {
         assert!(state.chain(&mut idx, 250));
         assert_eq!(idx, 1);
         assert!(state.complete[0] && state.in_use[1]);
+        // The connection's flow moves along with it.
+        assert!(state.flow[1].is_some() && state.flow[0].is_none());
         // A segment that already has progress is not taken over.
         state.segs[3].pos = 760;
         let mut idx = 2;
@@ -739,11 +891,14 @@ mod tests {
     }
 
     #[test]
-    fn claim_splits_largest_busy_segment() {
+    fn claim_splits_largest_flowing_segment() {
+        let now = Instant::now();
         let mut state = State::new(plan(Some(1000), true, &cfg(1, 100)));
-        assert_eq!(state.claim(true, 100), Some(0));
+        assert_eq!(state.claim(true, 100, now), Claim::Segment(0));
         state.segs[0].pos = 200;
-        assert_eq!(state.claim(true, 100), Some(1));
+        // 800 bytes left at 100 B/s: 8 s, worth a new connection.
+        state.flow[0] = flowing(100, now);
+        assert_eq!(state.claim(true, 100, now), Claim::Segment(1));
         assert_eq!(state.segs[0].end, Some(599));
         assert_eq!(
             state.segs[1],
@@ -754,7 +909,45 @@ mod tests {
             }
         );
         // Remaining 400 and 400 are below 2 * 300.
-        assert_eq!(state.claim(true, 300), None);
+        assert_eq!(state.claim(true, 300, now), Claim::Done);
         assert_eq!(state.downloaded(), 200);
+    }
+
+    #[test]
+    fn claim_leaves_waiting_segments_alone() {
+        let now = Instant::now();
+        let mut state = State::new(plan(Some(1000), true, &cfg(2, 100)));
+        assert_eq!(state.claim(true, 100, now), Claim::Segment(0));
+        assert_eq!(state.claim(true, 100, now), Claim::Segment(1));
+        // Neither connection has received data yet: wait instead of splitting.
+        assert_eq!(state.claim(true, 100, now), Claim::Wait);
+        // Data that only just started flowing doesn't tell the speed yet.
+        state.flow[0] = Some(Flow {
+            since: now,
+            bytes: 10,
+        });
+        assert_eq!(state.claim(true, 100, now), Claim::Wait);
+        assert_eq!(state.segs.len(), 2);
+        // The smaller segment is receiving data, so it is the one split.
+        state.flow[0] = None;
+        state.segs[1].pos = 700;
+        state.flow[1] = flowing(10, now);
+        assert_eq!(state.claim(true, 100, now), Claim::Segment(2));
+        assert_eq!(state.segs[1].end, Some(849));
+        assert_eq!(state.segs[0].end, Some(499));
+    }
+
+    #[test]
+    fn claim_does_not_split_what_finishes_before_a_new_connection_helps() {
+        let now = Instant::now();
+        let mut state = State::new(plan(Some(1000), true, &cfg(1, 100)));
+        assert_eq!(state.claim(true, 100, now), Claim::Segment(0));
+        // 1000 bytes at 400 B/s is 2.5 s; the server takes 2 s to answer.
+        state.flow[0] = flowing(400, now);
+        state.answer_time = Duration::from_secs(2);
+        assert_eq!(state.claim(true, 100, now), Claim::Done);
+        // A server that answers quickly makes the split worth it.
+        state.answer_time = Duration::from_millis(500);
+        assert_eq!(state.claim(true, 100, now), Claim::Segment(1));
     }
 }

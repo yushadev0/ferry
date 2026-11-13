@@ -40,6 +40,11 @@ pub struct EngineConfig {
     pub retry_base_delay: Duration,
     /// Fail a connection that sends no data for this long.
     pub read_timeout: Duration,
+    /// Send a request again when the server has not answered it for this
+    /// long, although it has answered another request of the download. Some
+    /// servers (Google Drive) hold a few requests for half a minute but answer
+    /// a fresh one at once.
+    pub answer_patience: Duration,
     /// How often progress events are emitted.
     pub progress_interval: Duration,
     /// How often segment progress is written to the database.
@@ -67,6 +72,7 @@ impl Default for EngineConfig {
             max_retries: 5,
             retry_base_delay: Duration::from_millis(500),
             read_timeout: Duration::from_secs(30),
+            answer_patience: Duration::from_secs(5),
             progress_interval: Duration::from_millis(500),
             save_interval: Duration::from_secs(1),
             connection_stagger: Duration::from_millis(150),

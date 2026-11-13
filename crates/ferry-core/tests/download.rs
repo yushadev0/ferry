@@ -432,6 +432,50 @@ async fn accepted_connections_survive_request_rate_limits() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn held_requests_are_sent_again_not_split() {
+    // Like drive.usercontent.google.com: the server holds some requests for
+    // half a minute while it answers others at once. A held segment must not
+    // be split (each half would wait again), and the request is sent again
+    // once the other connections are reading.
+    let server = common::spawn(common::Options {
+        size: 8 * 1024 * 1024,
+        ..common::Options::default()
+    })
+    .await;
+    let held = Duration::from_secs(20);
+    *server.state.hold_requests.lock().unwrap() = vec![(2, held), (3, held), (6, held)];
+    *server.state.chunk_delay.lock().unwrap() = Some(Duration::from_millis(5));
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::in_memory(EngineConfig {
+        segments: 8,
+        answer_patience: Duration::from_millis(500),
+        ..config()
+    })
+    .unwrap();
+    let mut rx = engine.subscribe();
+
+    let id = engine
+        .add(Request::new(&server.url, dir.path()))
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    engine.start(id).unwrap();
+    assert_eq!(wait_settled(&mut rx, id).await, (Status::Completed, None));
+    let took = started.elapsed();
+    assert_eq!(
+        std::fs::read(dir.path().join("test.bin")).unwrap(),
+        server.state.data
+    );
+    assert!(
+        took < held / 2,
+        "took {took:?}, held requests were waited out"
+    );
+    // 8 requests, the 3 held ones again, and a few splits.
+    let requests = server.state.download_requests.load(Ordering::SeqCst);
+    assert!(requests <= 20, "{requests} requests");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn inspect_add_and_start_need_one_probe() {
     let server = common::spawn(common::Options::default()).await;
     let dir = tempfile::tempdir().unwrap();

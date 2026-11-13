@@ -48,6 +48,10 @@ pub struct ServerState {
     /// Answer every request with this status.
     pub status_override: Mutex<Option<u16>>,
     pub chunk_delay: Mutex<Option<Duration>>,
+    /// Download requests (not the probe) by number from 1, and how long each
+    /// is held before it is answered, like Google Drive does with some.
+    pub hold_requests: Mutex<Vec<(usize, Duration)>>,
+    pub download_requests: AtomicUsize,
     pub bytes_served: AtomicU64,
     /// Bytes sent while at least one other download was open.
     pub parallel_bytes: AtomicU64,
@@ -97,6 +101,8 @@ pub async fn spawn(opts: Options) -> Server {
         truncate_next: AtomicUsize::new(0),
         status_override: Mutex::new(None),
         chunk_delay: Mutex::new(None),
+        hold_requests: Mutex::new(Vec::new()),
+        download_requests: AtomicUsize::new(0),
         bytes_served: AtomicU64::new(0),
         parallel_bytes: AtomicU64::new(0),
         range_requests: AtomicUsize::new(0),
@@ -167,6 +173,19 @@ async fn serve(State(st): State<Arc<ServerState>>, headers: HeaderMap) -> Respon
     let is_probe = range.as_deref() == Some("bytes=0-0");
     if is_probe {
         st.probe_requests.fetch_add(1, Ordering::SeqCst);
+    }
+    if !is_probe {
+        let n = st.download_requests.fetch_add(1, Ordering::SeqCst) + 1;
+        let hold = st
+            .hold_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|&&(k, _)| k == n)
+            .map(|&(_, d)| d);
+        if let Some(d) = hold {
+            tokio::time::sleep(d).await;
+        }
     }
     if !is_probe && take_one(&st.fail_next) {
         return Response::builder()
