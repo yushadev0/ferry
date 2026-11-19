@@ -41,9 +41,6 @@
 
   let showAdd = $state(false);
   let addUrl = $state("");
-  /** Browser downloads waiting for the Add dialog, oldest first. */
-  let captures = $state<api.Capture[]>([]);
-  let capture = $state<api.Capture | null>(null);
   let showSettings = $state(false);
   let scheduleIds = $state<number[] | null>(null);
   let confirmRemove = $state(false);
@@ -198,11 +195,8 @@
     (async () => {
       unlisten.push(await api.onEngineEvent(handleEvent));
       unlisten.push(await api.onQueueState((s) => (queue = s)));
-      unlisten.push(await api.onCapture(pullCaptures));
       if (disposed) unlisten.forEach((u) => u());
       [downloads, settings, queue] = await Promise.all([api.listDownloads(), api.getSettings(), api.queueState()]);
-      // Downloads the browser sent while the window was still loading.
-      await pullCaptures();
       startUpdateChecks(() => settings?.autoUpdateCheck ?? true);
     })().catch((e) => (banner = api.message(e)));
     return () => {
@@ -263,25 +257,11 @@
 
   function openAdd(url = "") {
     addUrl = url;
-    capture = null;
     showAdd = true;
   }
-
-  async function pullCaptures() {
-    captures.push(...(await api.takeCaptures()));
-  }
-
-  // Show the next browser download as soon as no other dialog is open.
-  $effect(() => {
-    if (captures.length === 0 || !settings || dialogOpen()) return;
-    capture = captures.shift() ?? null;
-    addUrl = "";
-    showAdd = true;
-  });
 
   function closeAdd() {
     showAdd = false;
-    capture = null;
   }
 
   const dialogOpen = () => showAdd || showSettings || confirmRemove || scheduleIds !== null;
@@ -475,9 +455,7 @@
 </div>
 
 {#if showAdd && settings}
-  {#key capture}
-    <AddDialog defaultDir={settings.downloadDir} segments={settings.segments} initialUrl={addUrl} {capture} onclose={closeAdd} />
-  {/key}
+  <AddDialog defaultDir={settings.downloadDir} segments={settings.segments} initialUrl={addUrl} onclose={closeAdd} />
 {/if}
 
 {#if showSettings && settings}

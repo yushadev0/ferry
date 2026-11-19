@@ -18,7 +18,7 @@ use settings::Settings;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, WindowEvent,
+    AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::Notify;
@@ -103,9 +103,15 @@ fn engine_config(settings: &Settings) -> EngineConfig {
     }
 }
 
+/// Label of the small window that shows downloads sent by the browser.
+const ADD_WINDOW: &str = "add";
+/// Command-line flag `ferry-host` passes when it starts the app for a browser
+/// download: only the Add window opens, not the main window.
+const CAPTURE_FLAG: &str = "--capture";
+
 /// Applies the theme setting to the window chrome, native menus and web content.
 fn apply_theme(app: &AppHandle, settings: &Settings) {
-    if let Some(window) = app.get_webview_window("main") {
+    for window in app.webview_windows().values() {
         let _ = window.set_theme(settings.theme.window_theme());
     }
 }
@@ -142,6 +148,33 @@ fn show_main_window(app: &AppHandle) {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
+    }
+}
+
+/// Shows the small Add window for browser downloads, opening it if needed.
+/// A new window starts hidden; the page shows it once it has its size.
+fn show_add_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(ADD_WINDOW) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        return;
+    }
+    let theme = app.state::<AppState>().settings().theme.window_theme();
+    let built = WebviewWindowBuilder::new(app, ADD_WINDOW, WebviewUrl::App("add".into()))
+        .title("Ferry Download Center")
+        .inner_size(520.0, 360.0)
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .always_on_top(true)
+        .center()
+        .theme(theme)
+        .visible(false)
+        .build();
+    if let Err(e) = built {
+        tracing::warn!(error = %e, "could not open the Add window; using the main window");
+        show_main_window(app);
     }
 }
 
@@ -254,8 +287,11 @@ fn forward_events(app: AppHandle, engine: Engine) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_main_window(app);
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // A browser download arrives over the socket and opens its own window.
+            if !args.iter().any(|a| a == CAPTURE_FLAG) {
+                show_main_window(app);
+            }
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -306,10 +342,18 @@ pub fn run() {
             browser::listen(app.handle().clone());
             run_scheduler(app.handle().clone());
             build_tray(app)?;
+            // The main window starts hidden, so a start by the browser shows
+            // only the download it sent.
+            if !std::env::args().any(|a| a == CAPTURE_FLAG) {
+                show_main_window(app.handle());
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() != "main" {
+                    return;
+                }
                 let app = window.app_handle();
                 if app.state::<AppState>().settings().close_to_tray {
                     let _ = window.hide();

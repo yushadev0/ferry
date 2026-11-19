@@ -101,7 +101,9 @@ fn app_path() -> Result<PathBuf> {
 fn launch_app() -> Result<()> {
     let path = app_path()?;
     let mut command = Command::new(&path);
+    // Tells the app to open only the Add window for the download, not the main window.
     command
+        .arg("--capture")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());

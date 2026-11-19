@@ -1,14 +1,20 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "Capability for the main window and the Add window",
   "windows": [
-    "main"
+    "main",
+    "add"
   ],
   "permissions": [
     "core:default",
     "dialog:allow-open",
     "updater:default",
-    "process:allow-restart"
+    "process:allow-restart",
+    "core:window:allow-set-size",
+    "core:window:allow-set-title",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-close"
   ]
 }

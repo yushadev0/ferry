@@ -70,7 +70,7 @@ fn receive(app: &AppHandle, capture: Capture) -> Reply {
         return Reply::error("Ferry can only download http, https and ftp links");
     }
     app.state::<AppState>().push_capture(capture);
-    crate::show_main_window(app);
+    crate::show_add_window(app);
     let _ = app.emit(CAPTURE_EVENT, ());
     Reply::ok(true)
 }

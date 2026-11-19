@@ -11,6 +11,7 @@
     segments,
     initialUrl = "",
     capture = null,
+    standalone = false,
     onclose,
   }: {
     defaultDir: string;
@@ -18,6 +19,8 @@
     initialUrl?: string;
     /** Set when the download comes from the browser extension. */
     capture?: api.Capture | null;
+    /** Fills its own window instead of floating over the main window. */
+    standalone?: boolean;
     onclose: () => void;
   } = $props();
 
@@ -114,9 +117,13 @@
 
 <svelte:window {onkeydown} />
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+<div
+  class={standalone ? "window" : "backdrop"}
+  role="presentation"
+  onclick={(e) => !standalone && e.target === e.currentTarget && onclose()}>
   <form
     class="modal"
+    class:standalone
     aria-label={capture ? t("add.fromBrowser") : t("add.title")}
     onsubmit={(e) => {
       e.preventDefault();
@@ -209,6 +216,14 @@
 </div>
 
 <style>
+  .standalone {
+    width: 100vw;
+    max-height: none;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    animation: none;
+  }
   .input-icon {
     position: relative;
     display: flex;
